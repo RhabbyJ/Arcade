@@ -3,7 +3,7 @@
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useState, useEffect } from 'react';
 import { useAccount } from 'wagmi';
-import { parseUnits, Contract, formatUnits, BrowserProvider } from 'ethers';
+import { parseUnits, Contract, BrowserProvider } from 'ethers';
 import { supabase } from '@/lib/supabase';
 import { USDC_ABI, ESCROW_ABI } from '@/lib/abi';
 import { MatchStatusBadge } from '@/components/MatchStatusBadge';
@@ -21,7 +21,7 @@ const DEBUG_ESCROW_ABI = [
 ];
 
 export default function Home() {
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, connector } = useAccount();
   const searchParams = useSearchParams();
   const inviteMatchId = searchParams.get('match'); // ?match=123
 
@@ -35,7 +35,7 @@ export default function Home() {
   const [serverReady, setServerReady] = useState(false);
 
   // Recovery Hook
-  const { recoveredMatch, loading: recoveryLoading } = useMatchRecovery();
+  const { recoveredMatch } = useMatchRecovery();
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -65,18 +65,18 @@ export default function Home() {
           console.log('Realtime Update:', payload.new);
           setMatchData(payload.new);
           
+          if (payload.new.status === 'DEPOSITING' && matchData.status !== 'DEPOSITING') {
+              addLog("Host started match! Deposit Phase Active.");
+          }
           if (payload.new.status === 'LIVE' && matchData.status !== 'LIVE') {
               addLog("Match is LIVE! Go go go!");
-          }
-          if (payload.new.status === 'COMPLETE' && matchData.status !== 'COMPLETE') {
-              addLog("Match Complete! Checking winner...");
           }
         }
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [matchData?.id]);
+  }, [matchData?.id, matchData?.status]); // Added status dependency
 
 
   // 3. ACTIONS
@@ -88,6 +88,7 @@ export default function Home() {
         .from('matches')
         .insert([{
             player1_address: address,
+            player2_address: '0x0000000000000000000000000000000000000000',
             status: 'LOBBY',
             contract_match_id: numericMatchId,
             payout_status: 'PENDING'
@@ -137,6 +138,14 @@ export default function Home() {
       setIsProcessing(false);
   };
 
+  const startDepositPhase = async () => {
+      addLog("Starting Deposit Phase...");
+      await supabase
+        .from('matches')
+        .update({ status: 'DEPOSITING' })
+        .eq('id', matchData.id);
+  };
+
   const handleDeposit = async () => {
       if (!steamId) return alert("Enter Steam ID first!");
       setIsProcessing(true);
@@ -153,7 +162,11 @@ export default function Home() {
             .eq('id', matchData.id);
 
         // B. Blockchain Transaction
-        const provider = new BrowserProvider(window.ethereum);
+        const walletProvider = await connector?.getProvider();
+        if (!walletProvider) throw new Error("No wallet provider found");
+        
+        // @ts-ignore
+        const provider = new BrowserProvider(walletProvider);
         const signer = await provider.getSigner();
         const usdc = new Contract(USDC_ADDRESS, USDC_ABI, signer);
         const escrow = new Contract(ESCROW_ADDRESS, DEBUG_ESCROW_ABI, signer);
@@ -173,21 +186,14 @@ export default function Home() {
         await tx.wait();
         addLog("Deposit Confirmed!");
 
-        // C. Update Status (Optimistic - In real app, backend should listen to events)
-        // For MVP, if BOTH have Steam IDs (meaning both tried to deposit), we set LIVE
-        // Actually, safer to just wait for manual refresh or backend. 
-        // But let's set 'PENDING' -> 'LIVE' logic here?
-        // Better: Just wait. If I am the second depositor, I can trigger LIVE.
-        
-        // Check if other player has deposited? We can't easily know on-chain without provider calls.
-        // Simplified: If both Steam IDs are present in DB, assume ready?
-        // Let's just update our Steam ID and let the backend/realtime handle the rest.
-        // Wait, we need to trigger LIVE state.
-        
-        // MVP HACK: If I am the second person to add Steam ID, set status to LIVE.
+        // C. Check if BOTH deposited to trigger LIVE
+        // We check if both Steam IDs are now present in DB
         const { data: freshData } = await supabase.from('matches').select('*').eq('id', matchData.id).single();
         if (freshData.player1_steam && freshData.player2_steam) {
+            addLog("Both Players Ready! Going LIVE...");
             await supabase.from('matches').update({ status: 'LIVE' }).eq('id', matchData.id);
+        } else {
+            addLog("Waiting for opponent to deposit...");
         }
 
       } catch (e: any) {
@@ -203,6 +209,8 @@ export default function Home() {
     setServerReady(true);
     addLog("Server Ready!");
   };
+
+
 
   // 4. VIEW LOGIC
   const renderView = () => {
@@ -226,7 +234,7 @@ export default function Home() {
                       <button 
                         onClick={createLobby}
                         disabled={isProcessing}
-                        className="bg-green-500 hover:bg-green-600 text-black font-bold py-4 px-8 rounded-xl text-xl"
+                        className="bg-green-500 hover:bg-green-600 text-black font-bold py-4 px-8 rounded-xl text-xl shadow-[0_0_20px_rgba(34,197,94,0.3)] transition-all hover:scale-105"
                       >
                           {isProcessing ? "Creating..." : "CREATE MATCH"}
                       </button>
@@ -235,55 +243,163 @@ export default function Home() {
           );
       }
 
-      // Helper: Check if a REAL Player 2 exists (not null, not zero-address)
-      const hasP2 = matchData.player2_address && matchData.player2_address !== '0x0000000000000000000000000000000000000000';
       const isHost = matchData.player1_address === address;
+      const hasP2 = matchData.player2_address && matchData.player2_address !== '0x0000000000000000000000000000000000000000';
+      
+      // UNIFIED LOBBY & DEPOSIT VIEW
+      if (['LOBBY', 'PENDING', 'DEPOSITING'].includes(matchData.status)) {
+          const p1Ready = !!matchData.player1_steam;
+          const p2Ready = !!matchData.player2_steam;
+          const isDepositing = matchData.status === 'DEPOSITING';
+          
+          // CONFLICT DETECTION
+          const isWrongMatch = inviteMatchId && String(matchData.contract_match_id) !== String(inviteMatchId);
 
-      // VIEW_LOBBY (Waiting for P2) or PENDING (Legacy/Transition)
-      if ((matchData.status === 'LOBBY' || matchData.status === 'PENDING') && !hasP2) {
           return (
-              <div className="bg-gray-800 p-8 rounded-xl border border-gray-700">
-                  <h2 className="text-2xl font-bold mb-4">LOBBY CREATED</h2>
-                  <p className="text-gray-400 mb-6">Waiting for Player 2...</p>
-                  <div className="bg-black/50 p-4 rounded border border-gray-600 flex gap-2">
-                      <code className="flex-1 text-left text-sm text-gray-300">
-                          {window.location.origin}?match={matchData.contract_match_id}
-                      </code>
-                      <button 
-                        onClick={() => navigator.clipboard.writeText(`${window.location.origin}?match=${matchData.contract_match_id}`)}
-                        className="text-xs bg-blue-600 px-3 py-1 rounded"
-                      >
-                          COPY
-                      </button>
+              <div className="w-full max-w-4xl flex flex-col gap-8">
+                  {/* CONFLICT WARNING */}
+                  {isWrongMatch && (
+                      <div className="bg-red-900/50 border border-red-500 p-4 rounded-lg flex justify-between items-center animate-pulse">
+                          <div>
+                              <p className="font-bold text-red-200">⚠️ You are in a different match!</p>
+                              <p className="text-xs text-red-300">Invite is for #{inviteMatchId}, but you are in #{matchData.contract_match_id}</p>
+                          </div>
+                          <button 
+                            onClick={() => setMatchData(null)}
+                            className="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 px-4 rounded"
+                          >
+                              LEAVE CURRENT MATCH
+                          </button>
+                      </div>
+                  )}
+
+                  {/* HEADER */}
+                  <div className="flex justify-between items-center bg-gray-800/50 p-4 rounded-lg border border-gray-700">
+                      <div>
+                          <p className="text-xs text-gray-400">MATCH ID</p>
+                          <p className="font-mono text-blue-400">{matchData.contract_match_id}</p>
+                      </div>
+                      <div className="text-right">
+                          <p className="text-xs text-gray-400">STATUS</p>
+                          <p className={`font-bold ${isDepositing ? 'text-yellow-400' : 'text-gray-300'}`}>
+                              {isDepositing ? 'DEPOSIT PHASE' : 'WAITING FOR PLAYERS'}
+                          </p>
+                      </div>
                   </div>
-                  <button onClick={() => setMatchData(null)} className="mt-8 text-xs text-red-500 underline">
-                      Exit Lobby (Clear Local State)
-                  </button>
-              </div>
-          );
-      }
 
-      // VIEW_DEPOSIT (Both Players Present)
-      if ((matchData.status === 'LOBBY' || matchData.status === 'PENDING') && hasP2) {
-          return (
-              <div className="bg-gray-800 p-8 rounded-xl border border-blue-500">
-                  <h2 className="text-2xl font-bold mb-2">MATCH FOUND!</h2>
-                  <p className="text-gray-400 mb-6">Both players are ready. Deposit to start.</p>
-                  
-                  <div className="flex flex-col gap-4">
-                      <input 
-                        type="text" 
-                        placeholder="Enter Steam ID (e.g. 7656...)"
-                        className="bg-black/50 border border-gray-600 p-3 rounded text-white"
-                        value={steamId}
-                        onChange={(e) => setSteamId(e.target.value)}
-                      />
+                  {/* SPLIT VIEW */}
+                  <div className="relative grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-12">
+                      
+                      {/* VS BADGE */}
+                      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 hidden md:flex items-center justify-center w-16 h-16 bg-black border-2 border-gray-700 rounded-full shadow-xl">
+                          <span className="text-2xl font-black italic text-gray-500">VS</span>
+                      </div>
+
+                      {/* PLAYER 1 (HOST) */}
+                      <div className={`p-6 rounded-xl border-2 flex flex-col items-center gap-4 transition-all ${p1Ready ? 'bg-green-900/20 border-green-500/50' : 'bg-gray-800 border-gray-700'}`}>
+                          <div className="w-20 h-20 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-2xl shadow-lg">
+                              🤖
+                          </div>
+                          <div className="text-center">
+                              <h3 className="font-bold text-lg">PLAYER 1</h3>
+                              <p className="text-xs text-gray-400 font-mono">{matchData.player1_address.slice(0,6)}...{matchData.player1_address.slice(-4)}</p>
+                          </div>
+                          {isDepositing && (
+                              <div className={`px-3 py-1 rounded text-xs font-bold ${p1Ready ? 'bg-green-500 text-black' : 'bg-yellow-500/20 text-yellow-500'}`}>
+                                  {p1Ready ? 'READY' : 'DEPOSITING...'}
+                              </div>
+                          )}
+                      </div>
+
+                      {/* PLAYER 2 (GUEST) */}
+                      <div className={`p-6 rounded-xl border-2 flex flex-col items-center gap-4 transition-all ${p2Ready ? 'bg-green-900/20 border-green-500/50' : 'bg-gray-800 border-gray-700'}`}>
+                          <div className={`w-20 h-20 rounded-full flex items-center justify-center text-2xl shadow-lg ${hasP2 ? 'bg-gradient-to-br from-red-500 to-orange-600' : 'bg-gray-700 animate-pulse'}`}>
+                              {hasP2 ? '👾' : '?'}
+                          </div>
+                          <div className="text-center">
+                              <h3 className="font-bold text-lg">PLAYER 2</h3>
+                              {hasP2 ? (
+                                  <p className="text-xs text-gray-400 font-mono">{matchData.player2_address.slice(0,6)}...{matchData.player2_address.slice(-4)}</p>
+                              ) : (
+                                  <p className="text-xs text-gray-500 italic">Waiting to join...</p>
+                              )}
+                          </div>
+                          {isDepositing && hasP2 && (
+                              <div className={`px-3 py-1 rounded text-xs font-bold ${p2Ready ? 'bg-green-500 text-black' : 'bg-yellow-500/20 text-yellow-500'}`}>
+                                  {p2Ready ? 'READY' : 'DEPOSITING...'}
+                              </div>
+                          )}
+                      </div>
+                  </div>
+
+                  {/* ACTION AREA */}
+                  <div className="bg-black/40 p-6 rounded-xl border border-gray-800 flex flex-col items-center gap-4">
+                      {!hasP2 ? (
+                          <div className="flex flex-col items-center gap-2 w-full">
+                              <p className="text-sm text-gray-400">Share this link to invite Player 2:</p>
+                              <div className="flex gap-2 w-full max-w-md">
+                                  <code className="flex-1 bg-black p-3 rounded border border-gray-700 text-sm text-gray-300 truncate">
+                                      {window.location.origin}?match={matchData.contract_match_id}
+                                  </code>
+                                  <button 
+                                      onClick={() => navigator.clipboard.writeText(`${window.location.origin}?match=${matchData.contract_match_id}`)}
+                                      className="bg-blue-600 hover:bg-blue-500 px-4 rounded font-bold"
+                                  >
+                                      COPY
+                                  </button>
+                              </div>
+                          </div>
+                      ) : !isDepositing ? (
+                          isHost ? (
+                              <button 
+                                  onClick={startDepositPhase}
+                                  className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg w-full max-w-md shadow-lg shadow-blue-900/20"
+                              >
+                                  START DEPOSIT PHASE
+                              </button>
+                          ) : (
+                              <p className="text-blue-400 animate-pulse font-bold">Waiting for Host to start...</p>
+                          )
+                      ) : (
+                          // DEPOSIT FORM
+                          <div className="w-full max-w-md flex flex-col gap-4">
+                              {(isHost && p1Ready) || (!isHost && p2Ready) ? (
+                                  <div className="text-center p-4 bg-green-900/20 border border-green-500/50 rounded-lg">
+                                      <p className="text-green-400 font-bold mb-1">YOU ARE READY</p>
+                                      <p className="text-xs text-gray-400">Waiting for opponent to deposit...</p>
+                                  </div>
+                              ) : (
+                                  <>
+                                      <input 
+                                          type="text" 
+                                          placeholder="Enter Steam ID (e.g. 7656...)"
+                                          className="bg-gray-900 border border-gray-700 p-3 rounded text-white w-full focus:border-blue-500 outline-none transition-colors"
+                                          value={steamId}
+                                          onChange={(e) => setSteamId(e.target.value)}
+                                      />
+                                      <button 
+                                          onClick={handleDeposit}
+                                          disabled={isProcessing}
+                                          className="bg-green-500 hover:bg-green-600 text-black font-bold py-3 px-6 rounded-lg w-full shadow-[0_0_15px_rgba(34,197,94,0.4)]"
+                                      >
+                                          {isProcessing ? "PROCESSING..." : "DEPOSIT 5 USDC"}
+                                      </button>
+                                  </>
+                              )}
+                          </div>
+                      )}
+
                       <button 
-                        onClick={handleDeposit}
-                        disabled={isProcessing}
-                        className="bg-green-500 hover:bg-green-600 text-black font-bold py-3 px-6 rounded-lg"
+                          onClick={async () => {
+                              if(!confirm("Cancel this lobby?")) return;
+                              const { error } = await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', matchData.id);
+                              if (error) alert(error.message);
+                              setMatchData(null);
+                              window.history.pushState({}, '', window.location.pathname);
+                          }}
+                          className="mt-4 text-xs text-red-500 hover:text-red-400 underline"
                       >
-                          {isProcessing ? "PROCESSING..." : "DEPOSIT 5 USDC"}
+                          Cancel Lobby
                       </button>
                   </div>
               </div>
@@ -345,7 +461,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-8 font-[family-name:var(--font-geist-sans)]">
-      <header className="absolute top-4 right-4">
+      <header className="absolute top-4 right-4 flex gap-4 items-center">
+
         <ConnectButton />
       </header>
 
@@ -360,6 +477,32 @@ export default function Home() {
         </div>
 
         {isConnected ? renderView() : <p>Connect Wallet to Play</p>}
+        
+        {/* DEBUG TOOLS */}
+        {isConnected && (
+            <div className="mt-12 pt-8 border-t border-gray-800 w-full text-center">
+                <p className="text-xs text-gray-600 mb-2">DEBUG ZONE</p>
+                <button 
+                    onClick={async () => {
+                        if(!confirm("⚠️ NUKE: This will cancel ALL your active matches. Are you sure?")) return;
+                        const { error } = await supabase
+                            .from('matches')
+                            .update({ status: 'CANCELLED' })
+                            .or(`player1_address.eq.${address},player2_address.eq.${address}`)
+                            .in('status', ['LOBBY', 'PENDING', 'DEPOSITING']);
+                        
+                        if (error) alert("Nuke failed: " + error.message);
+                        else {
+                            alert("💥 All active matches cancelled.");
+                            window.location.reload();
+                        }
+                    }}
+                    className="text-xs text-red-900 hover:text-red-500 underline"
+                >
+                    [DEBUG] Force Cancel All My Matches
+                </button>
+            </div>
+        )}
       </main>
     </div>
   );
