@@ -489,7 +489,7 @@ export default function Home() {
                             .from('matches')
                             .update({ status: 'CANCELLED' })
                             .or(`player1_address.eq.${address},player2_address.eq.${address}`)
-                            .in('status', ['LOBBY', 'PENDING', 'DEPOSITING']);
+                            .in('status', ['LOBBY', 'PENDING', 'DEPOSITING', 'LIVE']);
                         
                         if (error) alert("Nuke failed: " + error.message);
                         else {
