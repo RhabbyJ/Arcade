@@ -24,7 +24,7 @@ export function useMatchRecovery() {
                 .in('status', ['LOBBY', 'PENDING', 'LIVE'])
                 .order('created_at', { ascending: false })
                 .limit(1)
-                .single();
+                .maybeSingle();
 
             if (data) {
                 console.log("Recovered Active Match:", data);
