@@ -1,7 +1,7 @@
 'use client';
 
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useAccount } from 'wagmi';
 import { parseUnits, Contract, BrowserProvider } from 'ethers';
 import { supabase } from '@/lib/supabase';
@@ -20,7 +20,7 @@ const DEBUG_ESCROW_ABI = [
   "function usdc() external view returns (address)"
 ];
 
-export default function Home() {
+function ArcadeInterface() {
   const { address, isConnected, connector } = useAccount();
   const searchParams = useSearchParams();
   const inviteMatchId = searchParams.get('match'); // ?match=123
@@ -505,5 +505,13 @@ export default function Home() {
         )}
       </main>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">Loading Arcade...</div>}>
+      <ArcadeInterface />
+    </Suspense>
   );
 }
