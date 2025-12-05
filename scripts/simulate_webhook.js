@@ -1,4 +1,3 @@
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
@@ -13,44 +12,43 @@ if (!secret) {
     process.exit(1);
 }
 
-// 2. Mock Payload (What MatchZy sends)
-// We need a valid matchid from your Supabase DB to test this properly!
-// For now, we'll use a placeholder, but you should update this.
-const matchId = process.argv[2] || "12345"; // Pass match ID as argument
+// 2. Parse Arguments
+// Usage: node scripts/simulate_webhook.js [MATCH_ID] [TARGET_HOST]
+const matchId = process.argv[2] || "12345";
+const targetHost = process.argv[3] || "http://localhost:3000";
 
-const payload = JSON.stringify({
+// Ensure targetHost doesn't have trailing slash
+const baseUrl = targetHost.replace(/\/$/, "");
+const webhookUrl = `${baseUrl}/api/webhook?secret=${secret}`;
+
+// 3. Mock Payload
+const payload = {
     event: "series_end",
     matchid: matchId,
-    team1: { name: "Player 1", score: "13" },
+    team1: { name: "Player 1", score: "16" },
     team2: { name: "Player 2", score: "5" },
     winner: { side: "team1" }
-});
-
-// 3. Send Request
-const options = {
-    hostname: 'localhost',
-    port: 3000,
-    path: `/api/webhook?secret=${secret}`,
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': payload.length
-    }
 };
 
-console.log(`Sending Mock Webhook for Match ID: ${matchId}...`);
+console.log(`\n📡 Sending Mock Webhook...`);
+console.log(`   Target: ${webhookUrl}`);
+console.log(`   Match:  ${matchId}`);
+console.log(`   Result: Player 1 wins (16-5)\n`);
 
-const req = http.request(options, (res) => {
-    console.log(`STATUS: ${res.statusCode}`);
-    res.setEncoding('utf8');
-    res.on('data', (chunk) => {
-        console.log(`BODY: ${chunk}`);
+// 4. Send Request
+fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+})
+    .then(async (res) => {
+        const text = await res.text();
+        console.log(`Response Status: ${res.status}`);
+        console.log(`Response Body:   ${text}`);
+
+        if (res.ok) console.log("\n✅ Webhook delivered successfully!");
+        else console.log("\n❌ Webhook failed.");
+    })
+    .catch(err => {
+        console.error("\n❌ Network Error:", err.message);
     });
-});
-
-req.on('error', (e) => {
-    console.error(`problem with request: ${e.message}`);
-});
-
-req.write(payload);
-req.end();
