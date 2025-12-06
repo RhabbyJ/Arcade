@@ -64,12 +64,20 @@ export async function POST(req: Request) {
                 }
 
                 let winnerAddress = null;
-                if (match.player1_steam === winnerSteamId) {
+                // Trim whitespace just in case
+                const cleanWinnerSteamId = winnerSteamId.trim();
+                const cleanP1Steam = match.player1_steam?.trim();
+                const cleanP2Steam = match.player2_steam?.trim();
+
+                if (cleanP1Steam === cleanWinnerSteamId) {
                     winnerAddress = match.player1_address;
-                } else if (match.player2_steam === winnerSteamId) {
+                } else if (cleanP2Steam === cleanWinnerSteamId) {
                     winnerAddress = match.player2_address;
                 } else {
-                    console.error(`Winner Steam ID ${winnerSteamId} does not match any player in match ${match.id}`);
+                    console.error(`MISMATCH: Winner Steam ID ${cleanWinnerSteamId} does not match:`);
+                    console.error(`- Player 1: ${cleanP1Steam}`);
+                    console.error(`- Player 2: ${cleanP2Steam}`);
+                    console.error(`- Match ID: ${match.id}`);
                     // Don't fail, just log. Manual review needed.
                 }
 
