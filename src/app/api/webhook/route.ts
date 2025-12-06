@@ -17,21 +17,19 @@ export async function POST(req: Request) {
         console.log('Webhook received:', payload);
 
         if (payload.event === 'series_end') {
-            const { matchid, team1, team2 } = payload;
-            const t1Score = parseInt(team1.score);
-            const t2Score = parseInt(team2.score);
+            const { matchid, winner } = payload;
 
             let winnerTeam = null;
             let matchStatus = 'COMPLETE';
             let payoutStatus = 'PENDING';
 
-            // 2. Determine Result
-            if (t1Score > t2Score) {
+            // 2. Determine Result directly from MatchZy payload
+            if (winner && winner.team === 'team1') {
                 winnerTeam = 'team1';
-            } else if (t2Score > t1Score) {
+            } else if (winner && winner.team === 'team2') {
                 winnerTeam = 'team2';
             } else {
-                console.log(`Draw detected for match: ${matchid}`);
+                console.log(`No clear winner in payload for match: ${matchid}`, winner);
                 matchStatus = 'DISPUTED';
                 payoutStatus = 'MANUAL_REVIEW';
             }
