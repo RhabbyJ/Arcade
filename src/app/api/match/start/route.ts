@@ -20,7 +20,12 @@ export async function POST(req: Request) {
                 'Authorization': `Basic ${auth}`,
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
-            body: new URLSearchParams({ line: 'mp_restartgame 1' })
+            // Use matchzy_load_match_config to fully reset MatchZy state, or at least reload the config.
+            // mp_restartgame 1 is not enough to clear MatchZy's "matchStarted" state.
+            // We'll try reloading the practice config first, then the match config?
+            // Actually, "matchzy_end_match" might be safer if it exists, but "exec live" or similar is standard.
+            // Let's try forcing a full reload of the match plugin state.
+            body: new URLSearchParams({ line: 'matchzy_load_match_config' })
         });
 
         if (!response.ok) {

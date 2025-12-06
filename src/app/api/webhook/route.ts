@@ -27,6 +27,13 @@ export async function POST(req: Request) {
             const { matchid, team1, team2 } = payload;
             const WINNING_SCORE = 1; // Updated to 1 for testing (since mp_maxrounds is 1)
 
+            // Ignore "Game Commencing" (16) or other non-result reasons
+            // Also ignore if players array is empty (MatchZy bug/timing issue)
+            if (payload.reason === 16 || !team1.players?.length || !team2.players?.length) {
+                console.log(`Ignoring round_end (Reason: ${payload.reason}, Players: ${team1.players?.length}/${team2.players?.length})`);
+                return NextResponse.json({ received: true, status: 'ignored' });
+            }
+
             let winnerTeam = null;
             let winnerSteamId = null;
 
