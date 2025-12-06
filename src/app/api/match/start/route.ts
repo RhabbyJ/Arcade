@@ -25,7 +25,12 @@ export async function POST(req: Request) {
             // We'll try reloading the practice config first, then the match config?
             // Actually, "matchzy_end_match" might be safer if it exists, but "exec live" or similar is standard.
             // Let's try forcing a full reload of the match plugin state.
-            body: new URLSearchParams({ line: 'matchzy_load_match_config' })
+            // "matchzy_load_match_config" might not be a valid console command.
+            // We use a sequence to force a reset:
+            // 1. css_endmatch (Force end current match if running)
+            // 2. exec MatchZy/warmup.cfg (Force reload of warmup config to reset state)
+            // 3. mp_restartgame 1 (Standard engine reset)
+            body: new URLSearchParams({ line: 'css_endmatch; exec MatchZy/warmup.cfg; mp_restartgame 1' })
         });
 
         if (!response.ok) {
