@@ -16,104 +16,105 @@ export async function POST(req: Request) {
         const payload = await req.json();
         console.log('Webhook received:', payload);
 
-        if (payload.event === 'series_end') {
-            const { matchid, winner } = payload;
+        // HANDLE ROUND_END (Check for Win Condition)
+        // We use round_end because series_end payload often lacks player data (empty players array).
+        if (payload.event === 'round_end') {
+            const { matchid, team1, team2 } = payload;
+            const WINNING_SCORE = 2; // TODO: Set to 13 for production (MR24)
 
             let winnerTeam = null;
-            let matchStatus = 'COMPLETE';
-            let payoutStatus = 'PENDING';
-
-            // 2. Determine Result directly from MatchZy payload
             let winnerSteamId = null;
-            if (winner && winner.team === 'team1') {
+
+            // Check if anyone reached the winning score
+            if (team1.score >= WINNING_SCORE) {
+                winnerTeam = 'team1';
                 // @ts-ignore
-                winnerSteamId = payload.team1.players[0]?.steamid;
-            } else if (winner && winner.team === 'team2') {
+                winnerSteamId = team1.players[0]?.steamid;
+            } else if (team2.score >= WINNING_SCORE) {
+                winnerTeam = 'team2';
                 // @ts-ignore
-                winnerSteamId = payload.team2.players[0]?.steamid;
-            } else {
-                console.log(`No clear winner in payload for match: ${matchid}`, winner);
-                matchStatus = 'DISPUTED';
-                payoutStatus = 'MANUAL_REVIEW';
+                winnerSteamId = team2.players[0]?.steamid;
             }
 
-            // 3. Concurrency Safe Lookup
-            // Since DatHost matchid (e.g. 1, 2) doesn't match our contract_match_id,
-            // and we are single-threaded/single-server for MVP, we find the active LIVE match.
-            const { data: match, error: fetchError } = await supabase
-                .from('matches')
-                .select('*')
-                .eq('status', 'LIVE')
-                .order('created_at', { ascending: false })
-                .limit(1)
-                .maybeSingle();
+            if (winnerTeam && winnerSteamId) {
+                console.log(`Match ${matchid} finished via round_end. Winner: ${winnerTeam} (${winnerSteamId})`);
 
-            if (fetchError) {
-                console.error('Database error fetching match:', fetchError);
-                return NextResponse.json({ error: 'Database error' }, { status: 500 });
-            }
+                // Find the LIVE match
+                const { data: match, error: fetchError } = await supabase
+                    .from('matches')
+                    .select('*')
+                    .eq('status', 'LIVE')
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
 
-            if (!match) {
-                console.log('No LIVE match found. It might have already been processed.');
-                // Return 200 to stop DatHost from retrying if we already handled it
-                return NextResponse.json({ received: true, status: 'already_processed_or_not_found' });
-            }
+                if (fetchError) {
+                    console.error('Database error fetching match:', fetchError);
+                    return NextResponse.json({ error: 'Database error' }, { status: 500 });
+                }
 
-            let winnerAddress = null;
-            if (winnerSteamId) {
+                if (!match) {
+                    console.log('No LIVE match found. It might have already been processed.');
+                    return NextResponse.json({ received: true, status: 'no_live_match' });
+                }
+
+                let winnerAddress = null;
                 if (match.player1_steam === winnerSteamId) {
                     winnerAddress = match.player1_address;
                 } else if (match.player2_steam === winnerSteamId) {
                     winnerAddress = match.player2_address;
                 } else {
                     console.error(`Winner Steam ID ${winnerSteamId} does not match any player in match ${match.id}`);
-                    matchStatus = 'DISPUTED';
-                    payoutStatus = 'MANUAL_REVIEW';
+                    // Don't fail, just log. Manual review needed.
+                }
+
+                if (winnerAddress) {
+                    const { error: updateError } = await supabase
+                        .from('matches')
+                        .update({
+                            status: 'COMPLETE',
+                            winner_address: winnerAddress,
+                            payout_status: 'PENDING' // Triggers the payout cron
+                        })
+                        .eq('id', match.id);
+
+                    if (updateError) {
+                        console.error('Failed to update match:', updateError);
+                        return NextResponse.json({ error: 'Update failed' }, { status: 500 });
+                    }
+                    console.log(`Match ${match.id} marked COMPLETE. Winner: ${winnerAddress}`);
+
+                    // Trigger Auto-Kick
+                    try {
+                        const serverId = process.env.DATHOST_SERVER_ID;
+                        const username = process.env.DATHOST_USERNAME;
+                        const password = process.env.DATHOST_PASSWORD;
+
+                        if (serverId && username && password) {
+                            const auth = Buffer.from(`${username}:${password}`).toString('base64');
+                            await fetch(`https://dathost.net/api/0.1/game-servers/${serverId}/console`, {
+                                method: 'POST',
+                                headers: {
+                                    'Authorization': `Basic ${auth}`,
+                                    'Content-Type': 'application/x-www-form-urlencoded'
+                                },
+                                body: new URLSearchParams({ line: 'kickall' })
+                            });
+                            console.log('Kicked all players.');
+                        }
+                    } catch (e) {
+                        console.error('Auto-kick failed:', e);
+                    }
                 }
             }
 
-            // 4. Update State
-            const { error: updateError } = await supabase
-                .from('matches')
-                .update({
-                    status: matchStatus,
-                    winner_address: winnerAddress,
-                    payout_status: payoutStatus,
-                })
-                .eq('id', match.id);
+            return NextResponse.json({ received: true });
+        }
 
-            if (updateError) {
-                console.error('Failed to update match:', updateError);
-                return NextResponse.json({ error: 'Update failed' }, { status: 500 });
-            }
-
-            console.log(`Match ${match.id} processed. Status: ${matchStatus}`);
-
-            // 5. Cleanup Server (Kick Players)
-            try {
-                const serverId = process.env.DATHOST_SERVER_ID;
-                const username = process.env.DATHOST_USERNAME;
-                const password = process.env.DATHOST_PASSWORD;
-
-                if (serverId && username && password) {
-                    console.log(`Cleaning up Server ${serverId}...`);
-                    const auth = Buffer.from(`${username}:${password}`).toString('base64');
-
-                    // Send "kickall" to remove players
-                    await fetch(`https://dathost.net/api/0.1/game-servers/${serverId}/console`, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Basic ${auth}`,
-                            'Content-Type': 'application/x-www-form-urlencoded'
-                        },
-                        body: new URLSearchParams({ line: 'kickall' })
-                    });
-                    console.log('Server cleanup command sent.');
-                }
-            } catch (cleanupError) {
-                console.error('Failed to cleanup server:', cleanupError);
-                // Don't fail the webhook just because cleanup failed
-            }
+        // HANDLE SERIES_END (Backup / Logging)
+        if (payload.event === 'series_end') {
+            console.log('Series End received (handled via round_end).');
+            return NextResponse.json({ received: true });
         }
 
         return NextResponse.json({ received: true });
