@@ -92,15 +92,32 @@ export async function POST(req: Request) {
 
                         if (serverId && username && password) {
                             const auth = Buffer.from(`${username}:${password}`).toString('base64');
-                            await fetch(`https://dathost.net/api/0.1/game-servers/${serverId}/console`, {
-                                method: 'POST',
-                                headers: {
-                                    'Authorization': `Basic ${auth}`,
-                                    'Content-Type': 'application/x-www-form-urlencoded'
-                                },
-                                body: new URLSearchParams({ line: 'kickall' })
-                            });
-                            console.log('Kicked all players.');
+
+                            // Send "kickall" and individual kicks to ensure removal
+                            const kickCommands = ['kickall'];
+
+                            // Add individual kicks for robustness
+                            if (team1?.players) {
+                                // @ts-ignore
+                                team1.players.forEach(p => kickCommands.push(`kick "${p.name}"`));
+                            }
+                            if (team2?.players) {
+                                // @ts-ignore
+                                team2.players.forEach(p => kickCommands.push(`kick "${p.name}"`));
+                            }
+
+                            // Execute all kick commands
+                            for (const cmd of kickCommands) {
+                                await fetch(`https://dathost.net/api/0.1/game-servers/${serverId}/console`, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Authorization': `Basic ${auth}`,
+                                        'Content-Type': 'application/x-www-form-urlencoded'
+                                    },
+                                    body: new URLSearchParams({ line: cmd })
+                                });
+                            }
+                            console.log(`Sent kick commands: ${kickCommands.join(', ')}`);
                         }
                     } catch (e) {
                         console.error('Auto-kick failed:', e);
