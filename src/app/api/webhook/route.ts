@@ -24,10 +24,13 @@ export async function POST(req: Request) {
             let payoutStatus = 'PENDING';
 
             // 2. Determine Result directly from MatchZy payload
+            let winnerSteamId = null;
             if (winner && winner.team === 'team1') {
-                winnerTeam = 'team1';
+                // @ts-ignore
+                winnerSteamId = payload.team1.players[0]?.steamid;
             } else if (winner && winner.team === 'team2') {
-                winnerTeam = 'team2';
+                // @ts-ignore
+                winnerSteamId = payload.team2.players[0]?.steamid;
             } else {
                 console.log(`No clear winner in payload for match: ${matchid}`, winner);
                 matchStatus = 'DISPUTED';
@@ -56,7 +59,18 @@ export async function POST(req: Request) {
                 return NextResponse.json({ received: true, status: 'already_processed_or_not_found' });
             }
 
-            const winnerAddress = winnerTeam === 'team1' ? match.player1_address : (winnerTeam === 'team2' ? match.player2_address : null);
+            let winnerAddress = null;
+            if (winnerSteamId) {
+                if (match.player1_steam === winnerSteamId) {
+                    winnerAddress = match.player1_address;
+                } else if (match.player2_steam === winnerSteamId) {
+                    winnerAddress = match.player2_address;
+                } else {
+                    console.error(`Winner Steam ID ${winnerSteamId} does not match any player in match ${match.id}`);
+                    matchStatus = 'DISPUTED';
+                    payoutStatus = 'MANUAL_REVIEW';
+                }
+            }
 
             // 4. Update State
             const { error: updateError } = await supabase
