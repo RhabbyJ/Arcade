@@ -35,16 +35,25 @@ export async function POST(req: Request) {
             }
 
             // 3. Concurrency Safe Lookup
-            // We use the contract_match_id (which maps to DatHost matchid) to find the specific row
+            // Since DatHost matchid (e.g. 1, 2) doesn't match our contract_match_id,
+            // and we are single-threaded/single-server for MVP, we find the active LIVE match.
             const { data: match, error: fetchError } = await supabase
                 .from('matches')
                 .select('*')
-                .eq('contract_match_id', matchid)
-                .single();
+                .eq('status', 'LIVE')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
 
-            if (fetchError || !match) {
-                console.error(`Match ${matchid} not found in DB:`, fetchError);
-                return NextResponse.json({ error: 'Match not found' }, { status: 404 });
+            if (fetchError) {
+                console.error('Database error fetching match:', fetchError);
+                return NextResponse.json({ error: 'Database error' }, { status: 500 });
+            }
+
+            if (!match) {
+                console.log('No LIVE match found. It might have already been processed.');
+                // Return 200 to stop DatHost from retrying if we already handled it
+                return NextResponse.json({ received: true, status: 'already_processed_or_not_found' });
             }
 
             const winnerAddress = winnerTeam === 'team1' ? match.player1_address : (winnerTeam === 'team2' ? match.player2_address : null);
