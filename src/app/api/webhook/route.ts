@@ -1,6 +1,11 @@
 
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { ethers } from 'ethers';
+
+const ESCROW_ABI = [
+    "function payout(uint256 _matchId, address _winner) external"
+];
 
 export async function POST(req: Request) {
     try {
@@ -69,12 +74,35 @@ export async function POST(req: Request) {
                 }
 
                 if (winnerAddress) {
+                    let payoutStatus = 'PENDING';
+
+                    // AUTOMATIC PAYOUT (Serverless)
+                    if (process.env.PAYOUT_PRIVATE_KEY && process.env.NEXT_PUBLIC_ESCROW_ADDRESS) {
+                        try {
+                            console.log('Initiating automatic payout...');
+                            const provider = new ethers.JsonRpcProvider("https://sepolia.base.org");
+                            const wallet = new ethers.Wallet(process.env.PAYOUT_PRIVATE_KEY, provider);
+                            const escrow = new ethers.Contract(process.env.NEXT_PUBLIC_ESCROW_ADDRESS, ESCROW_ABI, wallet);
+
+                            // Send TX (Don't wait for full confirmation to avoid Vercel timeout)
+                            // We just wait for the transaction to be broadcasted to the mempool
+                            const tx = await escrow.payout(match.contract_match_id, winnerAddress);
+                            console.log(`Payout TX Sent: ${tx.hash}`);
+                            payoutStatus = 'PAID'; // Optimistic update
+                        } catch (payoutError) {
+                            console.error('Automatic payout failed:', payoutError);
+                            payoutStatus = 'FAILED'; // Will need manual retry
+                        }
+                    } else {
+                        console.log('Skipping automatic payout: Missing Private Key or Escrow Address');
+                    }
+
                     const { error: updateError } = await supabase
                         .from('matches')
                         .update({
                             status: 'COMPLETE',
                             winner_address: winnerAddress,
-                            payout_status: 'PENDING' // Triggers the payout cron
+                            payout_status: payoutStatus
                         })
                         .eq('id', match.id);
 
