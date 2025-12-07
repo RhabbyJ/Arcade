@@ -112,9 +112,17 @@ export async function POST(req: Request) {
                     }
                     console.log(`Match ${match.id} marked COMPLETE. Winner: ${winnerAddress}`);
 
-                    // Trigger Auto-Kick
+                    // NEW: Find the Assigned Server
+                    const { data: assignedServer } = await supabase
+                        .from('game_servers')
+                        .select('*')
+                        .eq('current_match_id', match.id)
+                        .single();
+
+                    // Trigger Auto-Kick & Reset
                     try {
-                        const serverId = process.env.DATHOST_SERVER_ID;
+                        // Use the assigned server's ID, or fallback to env (for legacy/testing)
+                        const serverId = assignedServer?.dathost_id || process.env.DATHOST_SERVER_ID;
                         const username = process.env.DATHOST_USERNAME;
                         const password = process.env.DATHOST_PASSWORD;
 
@@ -123,7 +131,6 @@ export async function POST(req: Request) {
 
                             // Send "kickall" and individual kicks to ensure removal
                             // ALSO send "css_endmatch" to force MatchZy to reset the match state.
-                            // "exec MatchZy/warmup.cfg" only reloads config, it doesn't stop the match logic.
                             const kickCommands = ['kickall', 'css_endmatch'];
 
                             // Add individual kicks for robustness
@@ -147,10 +154,24 @@ export async function POST(req: Request) {
                                     body: new URLSearchParams({ line: cmd })
                                 });
                             }
-                            console.log(`Sent kick commands: ${kickCommands.join(', ')}`);
+                            console.log(`Sent kick/reset commands to Server ${serverId}`);
                         }
                     } catch (e) {
-                        console.error('Auto-kick failed:', e);
+                        console.error("Auto-kick failed:", e);
+                    }
+
+                    // NEW: Free the Server (After kicking/resetting)
+                    if (assignedServer) {
+                        const { error: freeError } = await supabase
+                            .from('game_servers')
+                            .update({
+                                status: 'FREE',
+                                current_match_id: null
+                            })
+                            .eq('id', assignedServer.id);
+
+                        if (freeError) console.error("Failed to free server:", freeError);
+                        else console.log(`Server ${assignedServer.name} released.`);
                     }
                 }
             }
