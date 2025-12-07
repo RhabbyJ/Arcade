@@ -91,26 +91,11 @@ export async function POST(req: Request) {
                 if (winnerAddress) {
                     let payoutStatus = 'PENDING';
 
-                    // AUTOMATIC PAYOUT (Serverless)
-                    if (process.env.PAYOUT_PRIVATE_KEY && process.env.NEXT_PUBLIC_ESCROW_ADDRESS) {
-                        try {
-                            console.log('Initiating automatic payout...');
-                            const provider = new ethers.JsonRpcProvider("https://sepolia.base.org");
-                            const wallet = new ethers.Wallet(process.env.PAYOUT_PRIVATE_KEY, provider);
-                            const escrow = new ethers.Contract(process.env.NEXT_PUBLIC_ESCROW_ADDRESS, ESCROW_ABI, wallet);
-
-                            // Send TX (Don't wait for full confirmation to avoid Vercel timeout)
-                            // We just wait for the transaction to be broadcasted to the mempool
-                            const tx = await escrow.payout(match.contract_match_id, winnerAddress);
-                            console.log(`Payout TX Sent: ${tx.hash}`);
-                            payoutStatus = 'PAID'; // Optimistic update
-                        } catch (payoutError) {
-                            console.error('Automatic payout failed:', payoutError);
-                            payoutStatus = 'FAILED'; // Will need manual retry
-                        }
-                    } else {
-                        console.log('Skipping automatic payout: Missing Private Key or Escrow Address');
-                    }
+                    // AUTOMATIC PAYOUT REMOVED - MOVED TO WORKER SCRIPT
+                    // Reason: Vercel timeouts can cause double-spends.
+                    // The webhook now only marks the match as COMPLETE.
+                    // The 'payout_cron.ts' script will pick this up and handle the blockchain TX safely.
+                    console.log('Match complete. Payout queued for worker script.');
 
                     const { error: updateError } = await supabase
                         .from('matches')
