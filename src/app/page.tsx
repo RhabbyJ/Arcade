@@ -229,10 +229,29 @@ function ArcadeInterface() {
   };
 
   const prepareServer = async () => {
-    addLog("Resetting Server...");
-    await fetch('/api/match/start', { method: 'POST' });
-    setServerReady(true);
-    addLog("Server Ready!");
+    if (!matchData) return;
+    try {
+        addLog("Finding a Server...");
+        const res = await fetch('/api/match/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ matchId: matchData.id }) // Send matchId!
+        });
+        const data = await res.json();
+        
+        if (data.error) {
+            addLog("Error: " + data.error);
+            throw new Error(data.error);
+        }
+        
+        // Update State with Assigned Server
+        setServerInfo(data.server);
+        setServerReady(true);
+        addLog("Server Assigned: " + data.server.ip);
+    } catch (e: any) {
+        console.error(e);
+        // alert(e.message); // Optional: don't alert if using logs
+    }
   };
 
 
