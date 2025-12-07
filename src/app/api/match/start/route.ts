@@ -21,9 +21,9 @@ export async function POST(req: Request) {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
             // The Magic Sequence:
-            // 1. exec MatchZy/warmup.cfg -> Tells MatchZy "Stop tracking, go to ready state"
+            // 1. css_endmatch -> Tells MatchZy "Force end the current match" (Resets matchStarted to False)
             // 2. mp_restartgame 1 -> Tells CS2 "Restart the map clock"
-            body: new URLSearchParams({ line: 'exec MatchZy/warmup.cfg; mp_restartgame 1' })
+            body: new URLSearchParams({ line: 'css_endmatch; mp_restartgame 1' })
         });
 
         if (!response.ok) {
