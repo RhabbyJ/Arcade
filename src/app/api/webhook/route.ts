@@ -137,7 +137,8 @@ export async function POST(req: Request) {
                             const auth = Buffer.from(`${username}:${password}`).toString('base64');
 
                             // Send "kickall" and individual kicks to ensure removal
-                            const kickCommands = ['kickall'];
+                            // ALSO send "exec MatchZy/warmup.cfg" to reset the server state for the next match.
+                            const kickCommands = ['kickall', 'exec MatchZy/warmup.cfg'];
 
                             // Add individual kicks for robustness
                             if (team1?.players) {

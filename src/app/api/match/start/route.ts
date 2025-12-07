@@ -20,17 +20,10 @@ export async function POST(req: Request) {
                 'Authorization': `Basic ${auth}`,
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
-            // Use matchzy_load_match_config to fully reset MatchZy state, or at least reload the config.
-            // mp_restartgame 1 is not enough to clear MatchZy's "matchStarted" state.
-            // We'll try reloading the practice config first, then the match config?
-            // Actually, "matchzy_end_match" might be safer if it exists, but "exec live" or similar is standard.
-            // Let's try forcing a full reload of the match plugin state.
-            // "matchzy_load_match_config" might not be a valid console command.
-            // We use a sequence to force a reset:
-            // 1. css_endmatch (Force end current match if running)
-            // 2. exec MatchZy/warmup.cfg (Force reload of warmup config to reset state)
-            // 3. mp_restartgame 1 (Standard engine reset)
-            body: new URLSearchParams({ line: 'css_endmatch; exec MatchZy/warmup.cfg; mp_restartgame 1' })
+            // The Magic Sequence:
+            // 1. exec MatchZy/warmup.cfg -> Tells MatchZy "Stop tracking, go to ready state"
+            // 2. mp_restartgame 1 -> Tells CS2 "Restart the map clock"
+            body: new URLSearchParams({ line: 'exec MatchZy/warmup.cfg; mp_restartgame 1' })
         });
 
         if (!response.ok) {
