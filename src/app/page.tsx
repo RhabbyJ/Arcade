@@ -47,6 +47,8 @@ function ArcadeInterface() {
     }
   }, [recoveredMatch]);
 
+  const [serverInfo, setServerInfo] = useState<{ ip: string, port: number, connect_command: string } | null>(null);
+
   // 2. REALTIME UPDATES
   useEffect(() => {
     if (!matchData?.id) return;
@@ -77,6 +79,29 @@ function ArcadeInterface() {
 
     return () => { supabase.removeChannel(channel); };
   }, [matchData?.id, matchData?.status]); // Added status dependency
+
+    // NEW: Fetch assigned server if match is LIVE (Persistence)
+    useEffect(() => {
+        if (matchData?.status === 'LIVE' && !serverInfo) {
+            const fetchAssignedServer = async () => {
+                const { data } = await supabase
+                    .from('game_servers')
+                    .select('ip, port')
+                    .eq('current_match_id', matchData.id)
+                    .single();
+                
+                if (data) {
+                    setServerInfo({
+                        ip: data.ip,
+                        port: data.port,
+                        connect_command: `connect ${data.ip}:${data.port}; password lmaololz`
+                    });
+                    setServerReady(true); // Assume ready if already assigned
+                }
+            };
+            fetchAssignedServer();
+        }
+    }, [matchData?.status, matchData?.id]);
 
 
   // 3. ACTIONS
@@ -413,22 +438,24 @@ function ArcadeInterface() {
                   <MatchStatusBadge status="LIVE" />
                   <h2 className="text-2xl font-bold my-4 text-green-400">MATCH IS LIVE</h2>
                   
-                  {!serverReady ? (
+                  {!serverReady || !serverInfo ? (
                       <button onClick={prepareServer} className="bg-white text-black font-bold py-3 px-6 rounded w-full mb-4">
-                          1. RESET SERVER
+                          1. FIND SERVER & START
                       </button>
                   ) : (
                       <div className="bg-black p-4 rounded border border-gray-700 font-mono text-sm text-left mb-4">
-                          connect blindspot.dathost.net:26893; password lmaololz
+                          {serverInfo.connect_command}
                       </div>
                   )}
                   
-                  <button 
-                    onClick={() => navigator.clipboard.writeText("connect blindspot.dathost.net:26893; password lmaololz")}
-                    className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded w-full"
-                  >
-                      COPY CONNECT COMMAND
-                  </button>
+                  {serverInfo && (
+                      <button 
+                          onClick={() => navigator.clipboard.writeText(serverInfo.connect_command)}
+                          className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded w-full"
+                      >
+                          COPY CONNECT COMMAND
+                      </button>
+                  )}
               </div>
           );
       }
