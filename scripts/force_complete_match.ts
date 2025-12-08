@@ -11,42 +11,63 @@ const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function main() {
-    console.log("--- FORCING MATCH COMPLETION ---");
+    console.log("--- SIMULATING WEBHOOK WIN ---");
 
-    // 1. Get the latest match (regardless of status)
+    // 1. Get the latest LIVE match
     const { data: match, error } = await supabase
         .from('matches')
         .select('*')
+        .eq('status', 'LIVE')
         .order('created_at', { ascending: false })
         .limit(1)
         .single();
 
     if (error || !match) {
-        console.error("Error fetching match:", error);
+        console.error("No LIVE match found:", error);
         return;
     }
 
-    console.log(`Found Match ID: ${match.id} (Contract ID: ${match.contract_match_id})`);
-    console.log(`Current Status: ${match.status}`);
-    console.log(`Player 1: ${match.player1_address}`);
+    console.log(`Found LIVE Match: ${match.id}`);
+    console.log(`P1 Steam: ${match.player1_steam}`);
 
-    // 2. Force Update to COMPLETE + PENDING
-    // We assume Player 1 is the winner for this test
-    const { error: updateError } = await supabase
-        .from('matches')
-        .update({
-            status: 'COMPLETE',
-            winner_address: match.player1_address, // Force Player 1 win
-            payout_status: 'PENDING'
-        })
-        .eq('id', match.id);
-
-    if (updateError) {
-        console.error("Update failed:", updateError);
-    } else {
-        console.log("✅ Match updated successfully!");
-        console.log("Ready for payout_cron.ts");
+    // 2. Call the Webhook
+    // We use the deployed URL because the webhook logic is on Vercel
+    const secret = process.env.WEBHOOK_SECRET;
+    if (!secret) {
+        console.error("Missing WEBHOOK_SECRET in .env.local");
+        return;
     }
+    const WEBHOOK_URL = `https://arcade-sable.vercel.app/api/webhook?secret=${secret}`;
+
+    console.log(`Calling Webhook: ${WEBHOOK_URL}`);
+
+    const payload = {
+        event: 'round_end',
+        match_id: 'simulated_match_id',
+        reason: 'ct_win', // Assuming CT won
+        team1: {
+            stats: { score: 13 }, // Winning score
+            players: [
+                { steamid: match.player1_steam || '976', name: 'Player1' } // Use real SteamID from DB
+            ]
+        },
+        team2: {
+            stats: { score: 0 },
+            players: [
+                { steamid: '00000', name: 'Bot' }
+            ]
+        }
+    };
+
+    const res = await fetch(WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    console.log(`Response: ${res.status} ${res.statusText}`);
+    const text = await res.text();
+    console.log(`Body: ${text}`);
 }
 
 main();
