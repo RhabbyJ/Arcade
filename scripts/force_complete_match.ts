@@ -46,13 +46,13 @@ async function main() {
         match_id: 'simulated_match_id',
         reason: 'ct_win', // Assuming CT won
         team1: {
-            stats: { score: 13 }, // Winning score
+            score: 13, // Winning score
             players: [
                 { steamid: match.player1_steam || '976', name: 'Player1' } // Use real SteamID from DB
             ]
         },
         team2: {
-            stats: { score: 0 },
+            score: 0,
             players: [
                 { steamid: '00000', name: 'Bot' }
             ]
