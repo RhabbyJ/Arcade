@@ -292,25 +292,42 @@ function ArcadeInterface() {
           // VIEW_HOME
           return (
               <div className="flex flex-col gap-4">
-                  {inviteMatchId ? (
-                      <div className="bg-blue-900/30 p-6 rounded-xl border border-blue-500">
-                          <h2 className="text-xl font-bold mb-2">You have been invited!</h2>
-                          <p className="text-sm text-gray-400 mb-4">Match #{inviteMatchId}</p>
+                  {!steamData ? (
+                      <div className="bg-gray-800/80 p-8 rounded-3xl border border-blue-500/30 shadow-2xl backdrop-blur-xl max-w-md w-full animate-in fade-in zoom-in duration-500">
+                          <div className="h-12 w-12 bg-blue-500/10 rounded-2xl flex items-center justify-center mb-6 border border-blue-500/20">
+                              <span className="text-2xl">🔐</span>
+                          </div>
+                          <h2 className="text-2xl font-bold mb-3 text-white text-left">Link Steam to Play</h2>
+                          <p className="text-gray-400 text-sm mb-8 text-left leading-relaxed">
+                              To ensure 100% payout accuracy and prevent smurfing, you must verify your Steam identity before joining matches.
+                          </p>
+                          <button 
+                            onClick={handleSteamLink}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-[0_0_20px_rgba(37,99,235,0.4)] flex items-center justify-center gap-3 w-full group overflow-hidden relative"
+                          >
+                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
+                            <span className="text-xl">🎮</span> Link Steam Account
+                          </button>
+                      </div>
+                  ) : inviteMatchId ? (
+                      <div className="bg-blue-900/30 p-8 rounded-3xl border border-blue-500/50 shadow-xl backdrop-blur-sm">
+                          <h2 className="text-2xl font-bold mb-2">You're Invited!</h2>
+                          <p className="text-sm text-blue-300 mb-6 font-mono opacity-80 underline decoration-dotted">MATCH #{inviteMatchId}</p>
                           <button 
                             onClick={joinLobby}
                             disabled={isProcessing}
-                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg w-full"
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-10 rounded-2xl text-xl w-full transition-all shadow-lg hover:scale-[1.02] active:scale-95 disabled:opacity-50"
                           >
-                              {isProcessing ? "Joining..." : "JOIN MATCH"}
+                              {isProcessing ? "Joining..." : "JOIN NOW"}
                           </button>
                       </div>
                   ) : (
                       <button 
                         onClick={createLobby}
                         disabled={isProcessing}
-                        className="bg-green-500 hover:bg-green-600 text-black font-bold py-4 px-8 rounded-xl text-xl shadow-[0_0_20px_rgba(34,197,94,0.3)] transition-all hover:scale-105"
+                        className="bg-green-500 hover:bg-green-400 text-black font-black py-6 px-12 rounded-3xl text-2xl shadow-[0_0_40px_rgba(34,197,94,0.3)] transition-all hover:scale-105 active:scale-95 hover:shadow-[0_0_50px_rgba(34,197,94,0.5)] disabled:opacity-50"
                       >
-                          {isProcessing ? "Creating..." : "CREATE MATCH"}
+                          {isProcessing ? "CREATING..." : "START NEW MATCH"}
                       </button>
                   )}
               </div>
