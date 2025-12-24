@@ -47,6 +47,18 @@ function ArcadeInterface() {
     }
   }, [recoveredMatch]);
 
+  // NEW: Handle Error Params
+  useEffect(() => {
+    const error = searchParams.get('error');
+    if (error === 'steam_already_linked') {
+        alert("🔒 This Steam account is already linked to another wallet. Please use a different Steam account or contact support.");
+        window.history.replaceState({}, '', window.location.pathname);
+    } else if (error === 'steam_failed') {
+        alert("❌ Steam authentication failed. Please try again.");
+        window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [searchParams]);
+
   // NEW: Fetch Linked Steam Account
   useEffect(() => {
     if (!address) {
@@ -308,6 +320,10 @@ function ArcadeInterface() {
                             <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
                             <span className="text-xl">🎮</span> Link Steam Account
                           </button>
+                          
+                          <p className="mt-6 text-[10px] text-gray-500 text-center uppercase tracking-widest font-bold">
+                              Logged into the wrong Steam? <a href="https://steamcommunity.com/login/logout/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">Switch Account</a>
+                          </p>
                       </div>
                   ) : inviteMatchId ? (
                       <div className="bg-blue-900/30 p-8 rounded-3xl border border-blue-500/50 shadow-xl backdrop-blur-sm">

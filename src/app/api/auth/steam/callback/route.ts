@@ -63,7 +63,12 @@ export async function GET(req: Request): Promise<Response> {
                     p_steam_avatar: steamAvatar
                 });
 
-                if (linkError) throw linkError;
+                if (linkError) {
+                    if (linkError.message?.includes('already linked to another wallet')) {
+                        return resolve(NextResponse.redirect(`${protocol}://${host}/?error=steam_already_linked`));
+                    }
+                    throw linkError;
+                }
 
                 // Clear the cookie and redirect home with success
                 cookieStore.delete('linking_wallet');
