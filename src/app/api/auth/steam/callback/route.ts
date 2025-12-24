@@ -4,7 +4,7 @@ import openid from 'openid';
 import { cookies } from 'next/headers';
 import { supabase } from '@/lib/supabase';
 
-export async function GET(req: Request) {
+export async function GET(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const host = req.headers.get('host');
     const protocol = host?.includes('localhost') ? 'http' : 'https';
@@ -18,8 +18,8 @@ export async function GET(req: Request) {
         []
     );
 
-    return new Promise((resolve) => {
-        relyingParty.verifyAuth(req.url, async (error, result) => {
+    return new Promise<Response>((resolve) => {
+        relyingParty.verifyAssertion(req.url, async (error, result) => {
             if (error || !result || !result.authenticated) {
                 console.error('Steam Verification Failed:', error);
                 resolve(NextResponse.redirect(`${protocol}://${host}/?error=steam_failed`));

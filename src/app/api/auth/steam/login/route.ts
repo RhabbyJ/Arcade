@@ -5,7 +5,7 @@ import { cookies } from 'next/headers';
 
 const STEAM_OPENID_URL = 'https://steamcommunity.com/openid';
 
-export async function GET(req: Request) {
+export async function GET(req: Request): Promise<Response> {
     const { searchParams } = new URL(req.url);
     const walletAddress = searchParams.get('address');
 
@@ -25,7 +25,7 @@ export async function GET(req: Request) {
         [] // Extensions
     );
 
-    return new Promise((resolve) => {
+    return new Promise<Response>((resolve) => {
         relyingParty.authenticate(STEAM_OPENID_URL, false, (error, authUrl) => {
             if (error) {
                 console.error('Steam Auth Error:', error);
