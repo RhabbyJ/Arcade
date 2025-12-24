@@ -30,7 +30,7 @@ function ArcadeInterface() {
   const [logs, setLogs] = useState<string[]>([]);
   
   // UI Inputs
-  const [steamId, setSteamId] = useState('');
+  const [steamData, setSteamData] = useState<{ id: string, name: string | null } | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [serverReady, setServerReady] = useState(false);
 
@@ -46,6 +46,30 @@ function ArcadeInterface() {
       setMatchData(recoveredMatch);
     }
   }, [recoveredMatch]);
+
+  // NEW: Fetch Linked Steam Account
+  useEffect(() => {
+    if (!address) {
+      setSteamData(null);
+      return;
+    }
+
+    const fetchSteamData = async () => {
+      const { data } = await supabase
+        .from('users')
+        .select('steam_id, steam_name')
+        .eq('wallet_address', address)
+        .maybeSingle();
+      
+      if (data) {
+        setSteamData({ id: data.steam_id, name: data.steam_name });
+      } else {
+        setSteamData(null);
+      }
+    };
+
+    fetchSteamData();
+  }, [address]);
 
   const [serverInfo, setServerInfo] = useState<{ ip: string, port: number, connect_command: string } | null>(null);
 
@@ -105,7 +129,13 @@ function ArcadeInterface() {
 
 
   // 3. ACTIONS
+  const handleSteamLink = () => {
+    if (!address) return alert("Connect Wallet First!");
+    window.location.href = `/api/auth/steam/login?address=${address}`;
+  };
+
   const createLobby = async () => {
+      if (!steamData) return alert("Link Steam Account First!");
       setIsProcessing(true);
       const numericMatchId = Date.now();
       
@@ -172,7 +202,7 @@ function ArcadeInterface() {
   };
 
   const handleDeposit = async () => {
-      if (!steamId) return alert("Enter Steam ID first!");
+      if (!steamData) return alert("Link Steam Account First!");
       setIsProcessing(true);
       addLog("Starting Deposit Sequence...");
 
@@ -183,7 +213,7 @@ function ArcadeInterface() {
         
         await supabase
             .from('matches')
-            .update({ [updateField]: steamId })
+            .update({ [updateField]: steamData.id })
             .eq('id', matchData.id);
 
         // B. Blockchain Transaction
@@ -406,31 +436,41 @@ function ArcadeInterface() {
                           )
                       ) : (
                           // DEPOSIT FORM
-                          <div className="w-full max-w-md flex flex-col gap-4">
-                              {(isHost && p1Ready) || (!isHost && p2Ready) ? (
-                                  <div className="text-center p-4 bg-green-900/20 border border-green-500/50 rounded-lg">
-                                      <p className="text-green-400 font-bold mb-1">YOU ARE READY</p>
-                                      <p className="text-xs text-gray-400">Waiting for opponent to deposit...</p>
-                                  </div>
-                              ) : (
-                                  <>
-                                      <input 
-                                          type="text" 
-                                          placeholder="Enter Steam ID (e.g. 7656...)"
-                                          className="bg-gray-900 border border-gray-700 p-3 rounded text-white w-full focus:border-blue-500 outline-none transition-colors"
-                                          value={steamId}
-                                          onChange={(e) => setSteamId(e.target.value)}
-                                      />
-                                      <button 
-                                          onClick={handleDeposit}
-                                          disabled={isProcessing}
-                                          className="bg-green-500 hover:bg-green-600 text-black font-bold py-3 px-6 rounded-lg w-full shadow-[0_0_15px_rgba(34,197,94,0.4)]"
-                                      >
-                                          {isProcessing ? "PROCESSING..." : "DEPOSIT 5 USDC"}
-                                      </button>
-                                  </>
-                              )}
-                          </div>
+                           <div className="w-full max-w-md flex flex-col gap-4">
+                               {(isHost && p1Ready) || (!isHost && p2Ready) ? (
+                                   <div className="text-center p-4 bg-green-900/20 border border-green-500/50 rounded-lg">
+                                       <p className="text-green-400 font-bold mb-1">YOU ARE READY</p>
+                                       <p className="text-xs text-gray-400">Waiting for opponent to deposit...</p>
+                                   </div>
+                               ) : (
+                                   <>
+                                       {steamData ? (
+                                           <div className="bg-gray-900/50 border border-blue-500/30 p-4 rounded-xl flex items-center justify-between">
+                                               <div className="flex flex-col">
+                                                   <span className="text-xs text-blue-400 font-bold uppercase tracking-wider">Verified Identity</span>
+                                                   <span className="text-white font-mono">{steamData.name || "Steam Connected"}</span>
+                                               </div>
+                                               <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
+                                           </div>
+                                       ) : (
+                                            <button 
+                                                onClick={handleSteamLink}
+                                                className="bg-gray-800 hover:bg-gray-700 text-white border border-gray-600 p-4 rounded-xl transition-all flex items-center justify-center gap-3 group"
+                                            >
+                                                <span>🔗</span> Link Steam Account
+                                            </button>
+                                       )}
+                                       
+                                       <button 
+                                           onClick={handleDeposit}
+                                           disabled={isProcessing || !steamData}
+                                           className="bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold py-4 px-6 rounded-xl w-full shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-all"
+                                       >
+                                           {isProcessing ? "PROCESSING..." : "DEPOSIT 5 USDC"}
+                                       </button>
+                                   </>
+                               )}
+                           </div>
                       )}
 
                       <button 
