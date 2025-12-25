@@ -57,6 +57,12 @@ function ArcadeInterface() {
     } else if (error === 'steam_failed') {
         alert("❌ Steam authentication failed. Please try again.");
         window.history.replaceState({}, '', window.location.pathname);
+    } else if (error === 'missing_data') {
+        alert("⚠️ Session expired or cookies blocked. Please try clicking the link button again.");
+        window.history.replaceState({}, '', window.location.pathname);
+    } else if (error === 'link_failed') {
+        alert("❌ Database connection failed. Please try again.");
+        window.history.replaceState({}, '', window.location.pathname);
     }
   }, [searchParams]);
 

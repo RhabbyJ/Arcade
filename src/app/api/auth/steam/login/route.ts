@@ -35,9 +35,11 @@ export async function GET(req: Request): Promise<Response> {
             } else {
                 // Store the wallet address in a cookie to link it in the callback
                 const cookieStore = cookies();
+                const isSecure = protocol === 'https';
                 cookieStore.set('linking_wallet', walletAddress, {
                     httpOnly: true,
-                    secure: protocol === 'https',
+                    secure: isSecure,
+                    sameSite: 'lax',
                     maxAge: 60 * 10, // 10 minutes
                     path: '/'
                 });
