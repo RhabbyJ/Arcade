@@ -79,6 +79,11 @@ export async function GET(req: Request): Promise<Response> {
                 cookieStore.set('steam_session_name', steamName || 'Steam User', { secure: true, httpOnly: false, sameSite: 'lax', maxAge: oneDay });
 
                 resolve(NextResponse.redirect(`${protocol}://${host}/?success=steam_linked`));
-            });
+                resolve(NextResponse.redirect(`${protocol}://${host}/?success=steam_linked`));
+            } catch (err) {
+                console.error('Database Linking Error:', err);
+                resolve(NextResponse.redirect(`${protocol}://${host}/?error=link_failed`));
+            }
+        });
     });
 }
