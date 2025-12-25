@@ -1,8 +1,8 @@
-
 import { NextResponse } from 'next/server';
 import openid from 'openid';
 import { cookies } from 'next/headers';
 import { supabase } from '@/lib/supabase';
+import { randomBytes } from 'crypto';
 
 export async function GET(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -26,7 +26,7 @@ export async function GET(req: Request): Promise<Response> {
                 return;
             }
 
-            // Extract SteamID64 from claimed_id (e.g., https://steamcommunity.com/openid/id/76561198...)
+            // Extract SteamID64 from claimed_id
             const steamId = result.claimedIdentifier?.split('/').pop();
             const cookieStore = cookies();
             const walletAddress = cookieStore.get('linking_wallet')?.value;
@@ -38,7 +38,7 @@ export async function GET(req: Request): Promise<Response> {
             }
 
             try {
-                // Optional: Fetch Steam Profiler Data (Name/Avatar) if STEAM_API_KEY exists
+                // 1. Fetch Steam Profile Data
                 let steamName = null;
                 let steamAvatar = null;
                 const STEAM_API_KEY = process.env.STEAM_API_KEY;
@@ -55,34 +55,56 @@ export async function GET(req: Request): Promise<Response> {
                     }
                 }
 
-                // Link in Database via Supabase RPC
-                const { error: linkError } = await supabase.rpc('link_steam_account', {
+                // 2. Generate secure session token
+                const sessionToken = randomBytes(32).toString('hex');
+
+                // 3. Delete any existing sessions for this wallet (single session per wallet)
+                await supabase
+                    .from('sessions')
+                    .delete()
+                    .eq('wallet_address', walletAddress);
+
+                // 4. Create new session in database
+                const { error: sessionError } = await supabase
+                    .from('sessions')
+                    .insert({
+                        wallet_address: walletAddress,
+                        steam_id: steamId,
+                        steam_name: steamName,
+                        steam_avatar: steamAvatar,
+                        session_token: sessionToken,
+                        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 hours
+                    });
+
+                if (sessionError) {
+                    console.error('Session Creation Failed:', sessionError);
+                    throw sessionError;
+                }
+
+                // 5. Soft-update user's preferred Steam (optional, for profile display)
+                await supabase.rpc('link_steam_account', {
                     p_wallet_address: walletAddress,
                     p_steam_id: steamId,
                     p_steam_name: steamName,
                     p_steam_avatar: steamAvatar
                 });
 
-                if (linkError) {
-                    if (linkError.message?.includes('already linked to another wallet')) {
-                        return resolve(NextResponse.redirect(`${protocol}://${host}/?error=steam_already_linked`));
-                    }
-                    throw linkError;
-                }
-
-                // Clear the linking cookie
+                // 6. Clear the linking cookie and set the session token cookie
                 cookieStore.delete('linking_wallet');
 
-                // Set SESSION cookies (Persistent login state for the browser)
-                const oneDay = 24 * 60 * 60 * 1000;
-                cookieStore.set('steam_session_id', steamId, { secure: true, httpOnly: true, sameSite: 'lax', maxAge: oneDay });
-                cookieStore.set('steam_session_name', steamName || 'Steam User', { secure: true, httpOnly: false, sameSite: 'lax', maxAge: oneDay });
+                const isSecure = protocol === 'https';
+                cookieStore.set('session_token', sessionToken, {
+                    httpOnly: true,
+                    secure: isSecure,
+                    sameSite: 'lax',
+                    maxAge: 24 * 60 * 60, // 24 hours in seconds
+                    path: '/'
+                });
 
-                resolve(NextResponse.redirect(`${protocol}://${host}/?success=steam_linked`));
-                resolve(NextResponse.redirect(`${protocol}://${host}/?success=steam_linked`));
+                resolve(NextResponse.redirect(`${protocol}://${host}/?success=logged_in`));
             } catch (err) {
-                console.error('Database Linking Error:', err);
-                resolve(NextResponse.redirect(`${protocol}://${host}/?error=link_failed`));
+                console.error('Session Creation Error:', err);
+                resolve(NextResponse.redirect(`${protocol}://${host}/?error=session_failed`));
             }
         });
     });

@@ -1,20 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
+import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
+// This endpoint is DEPRECATED - use /api/auth/sessions instead
+// Kept for backwards compatibility during migration
 export async function GET(req: NextRequest) {
-    const cookieStore = cookies();
-    const steamId = cookieStore.get('steam_session_id')?.value;
-    const steamName = cookieStore.get('steam_session_name')?.value;
+    const { searchParams } = new URL(req.url);
+    const wallet = searchParams.get('wallet');
 
-    if (!steamId) {
+    const cookieStore = cookies();
+    const sessionToken = cookieStore.get('session_token')?.value;
+
+    if (!sessionToken) {
+        return NextResponse.json({ authenticated: false });
+    }
+
+    // Build query - if wallet is provided, validate against it
+    let query = supabase
+        .from('sessions')
+        .select('*')
+        .eq('session_token', sessionToken)
+        .gt('expires_at', new Date().toISOString());
+
+    if (wallet) {
+        query = query.eq('wallet_address', wallet);
+    }
+
+    const { data: session, error } = await query.maybeSingle();
+
+    if (error || !session) {
         return NextResponse.json({ authenticated: false });
     }
 
     return NextResponse.json({
         authenticated: true,
-        steamId,
-        steamName
+        steamId: session.steam_id,
+        steamName: session.steam_name,
+        steamAvatar: session.steam_avatar,
+        walletAddress: session.wallet_address
     });
 }

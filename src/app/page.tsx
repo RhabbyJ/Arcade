@@ -10,6 +10,7 @@ import { MatchStatusBadge } from '@/components/MatchStatusBadge';
 import { useMatchRecovery } from '@/hooks/useMatchRecovery';
 import { useSearchParams } from 'next/navigation';
 import VerificationGate from '@/components/VerificationGate';
+import SteamIdentityBadge from '@/components/SteamIdentityBadge';
 
 const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS!;
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
@@ -66,7 +67,7 @@ function ArcadeInterface() {
     }
   }, [searchParams]);
 
-  // NEW: Fetch Linked Steam Account
+  // NEW: Fetch Session-based Steam Data
   useEffect(() => {
     if (!address) {
       setSteamData(null);
@@ -74,15 +75,17 @@ function ArcadeInterface() {
     }
 
     const fetchSteamData = async () => {
-      const { data } = await supabase
-        .from('users')
-        .select('steam_id, steam_name')
-        .eq('wallet_address', address)
-        .maybeSingle();
-      
-      if (data) {
-        setSteamData({ id: data.steam_id, name: data.steam_name });
-      } else {
+      try {
+        const res = await fetch(`/api/auth/sessions?wallet=${address}`);
+        const data = await res.json();
+        
+        if (data.authenticated) {
+          setSteamData({ id: data.steamId, name: data.steamName });
+        } else {
+          setSteamData(null);
+        }
+      } catch (e) {
+        console.error('Session fetch error:', e);
         setSteamData(null);
       }
     };
@@ -567,21 +570,7 @@ function ArcadeInterface() {
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-8 font-[family-name:var(--font-geist-sans)]">
       <header className="absolute top-4 right-4 flex gap-4 items-center">
-        {steamData && (
-          <div className="flex items-center gap-3 bg-gray-800/50 border border-gray-700/50 px-4 py-2 rounded-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4 duration-500">
-            <div className="flex flex-col text-right">
-              <span className="text-[10px] text-blue-400 font-bold uppercase tracking-tighter">Linked Identity</span>
-              <span className="text-xs font-mono text-white max-w-[120px] truncate">{steamData.name || "Steam Profile"}</span>
-            </div>
-            <button 
-              onClick={handleSteamLink}
-              title="Re-verify or Switch Steam Account"
-              className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all group lg:flex"
-            >
-              <span className="text-sm group-hover:scale-125 transition-transform duration-300">🔄</span>
-            </button>
-          </div>
-        )}
+        <SteamIdentityBadge />
         <ConnectButton />
       </header>
 
