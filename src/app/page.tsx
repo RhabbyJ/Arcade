@@ -561,7 +561,21 @@ function ArcadeInterface() {
   return (
     <div className="min-h-screen bg-gray-900 text-white flex flex-col items-center justify-center p-8 font-[family-name:var(--font-geist-sans)]">
       <header className="absolute top-4 right-4 flex gap-4 items-center">
-
+        {steamData && (
+          <div className="flex items-center gap-3 bg-gray-800/50 border border-gray-700/50 px-4 py-2 rounded-2xl backdrop-blur-md animate-in fade-in slide-in-from-right-4 duration-500">
+            <div className="flex flex-col text-right">
+              <span className="text-[10px] text-blue-400 font-bold uppercase tracking-tighter">Linked Identity</span>
+              <span className="text-xs font-mono text-white max-w-[120px] truncate">{steamData.name || "Steam Profile"}</span>
+            </div>
+            <button 
+              onClick={handleSteamLink}
+              title="Re-verify or Switch Steam Account"
+              className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center transition-all group lg:flex"
+            >
+              <span className="text-sm group-hover:scale-125 transition-transform duration-300">🔄</span>
+            </button>
+          </div>
+        )}
         <ConnectButton />
       </header>
 
