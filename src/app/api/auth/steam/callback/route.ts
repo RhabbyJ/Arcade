@@ -70,13 +70,15 @@ export async function GET(req: Request): Promise<Response> {
                     throw linkError;
                 }
 
-                // Clear the cookie and redirect home with success
+                // Clear the linking cookie
                 cookieStore.delete('linking_wallet');
+
+                // Set SESSION cookies (Persistent login state for the browser)
+                const oneDay = 24 * 60 * 60 * 1000;
+                cookieStore.set('steam_session_id', steamId, { secure: true, httpOnly: true, sameSite: 'lax', maxAge: oneDay });
+                cookieStore.set('steam_session_name', steamName || 'Steam User', { secure: true, httpOnly: false, sameSite: 'lax', maxAge: oneDay });
+
                 resolve(NextResponse.redirect(`${protocol}://${host}/?success=steam_linked`));
-            } catch (err) {
-                console.error('Database Linking Error:', err);
-                resolve(NextResponse.redirect(`${protocol}://${host}/?error=link_failed`));
-            }
-        });
+            });
     });
 }
