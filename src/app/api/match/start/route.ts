@@ -12,11 +12,11 @@ export async function POST(req: Request) {
         const { matchId } = await req.json();
         if (!matchId) return NextResponse.json({ error: "Match ID required" }, { status: 400 });
 
-        // 1. Find a FREE server
+        // 1. Find an AVAILABLE server
         const { data: server, error: findError } = await supabase
             .from('game_servers')
             .select('*')
-            .eq('status', 'FREE')
+            .eq('status', 'AVAILABLE')
             .limit(1)
             .single();
 
