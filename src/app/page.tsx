@@ -9,6 +9,7 @@ import { USDC_ABI, ESCROW_ABI } from '@/lib/abi';
 import { MatchStatusBadge } from '@/components/MatchStatusBadge';
 import { useMatchRecovery } from '@/hooks/useMatchRecovery';
 import { useSearchParams } from 'next/navigation';
+import VerificationGate from '@/components/VerificationGate';
 
 const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS!;
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
@@ -304,28 +305,7 @@ function ArcadeInterface() {
           // VIEW_HOME
           return (
               <div className="flex flex-col gap-4">
-                  {!steamData ? (
-                      <div className="bg-gray-800/80 p-8 rounded-3xl border border-blue-500/30 shadow-2xl backdrop-blur-xl max-w-md w-full animate-in fade-in zoom-in duration-500">
-                          <div className="h-12 w-12 bg-blue-500/10 rounded-2xl flex items-center justify-center mb-6 border border-blue-500/20">
-                              <span className="text-2xl">🔐</span>
-                          </div>
-                          <h2 className="text-2xl font-bold mb-3 text-white text-left">Link Steam to Play</h2>
-                          <p className="text-gray-400 text-sm mb-8 text-left leading-relaxed">
-                              To ensure 100% payout accuracy and prevent smurfing, you must verify your Steam identity before joining matches.
-                          </p>
-                          <button 
-                            onClick={handleSteamLink}
-                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-2xl transition-all shadow-[0_0_20px_rgba(37,99,235,0.4)] flex items-center justify-center gap-3 w-full group overflow-hidden relative"
-                          >
-                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700"></div>
-                            <span className="text-xl">🎮</span> Link Steam Account
-                          </button>
-                          
-                          <p className="mt-6 text-[10px] text-gray-500 text-center uppercase tracking-widest font-bold">
-                              Logged into the wrong Steam? <a href="https://steamcommunity.com/login/logout/" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">Switch Account</a>
-                          </p>
-                      </div>
-                  ) : inviteMatchId ? (
+                  {inviteMatchId ? (
                       <div className="bg-blue-900/30 p-8 rounded-3xl border border-blue-500/50 shadow-xl backdrop-blur-sm">
                           <h2 className="text-2xl font-bold mb-2">You're Invited!</h2>
                           <p className="text-sm text-blue-300 mb-6 font-mono opacity-80 underline decoration-dotted">MATCH #{inviteMatchId}</p>
@@ -595,7 +575,13 @@ function ArcadeInterface() {
             {logs.map((log, i) => <div key={i} className="text-green-400">{`> ${log}`}</div>)}
         </div>
 
-        {isConnected ? renderView() : <p>Connect Wallet to Play</p>}
+        {isConnected ? (
+          <VerificationGate>
+            {renderView()}
+          </VerificationGate>
+        ) : (
+          <p>Connect Wallet to Play</p>
+        )}
         
         {/* DEBUG TOOLS */}
         {isConnected && (
