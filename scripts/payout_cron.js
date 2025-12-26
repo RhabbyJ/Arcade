@@ -1,14 +1,20 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { ethers } from 'ethers';
-import * as dotenv from 'dotenv';
-import * as path from 'path';
+const { createClient } = require('@supabase/supabase-js');
+const { ethers } = require('ethers');
+const path = require('path');
+const dotenv = require('dotenv');
 
-// Load environment variables from .env.local
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
+// Load .env or .env.local from current dir
+// Added { quiet: true } to suppress verbose logs
+const envLocalPath = path.resolve(__dirname, '.env.local');
+const envPath = path.resolve(__dirname, '.env');
+const config = { quiet: true }; // Suppress startup tips
+dotenv.config({ path: envLocalPath, ...config });
+dotenv.config({ path: envPath, ...config });
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
+// --- CONFIG ---
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
 const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const RPC_URL = "https://sepolia.base.org";
 
@@ -16,13 +22,15 @@ const RPC_URL = "https://sepolia.base.org";
 const DATHOST_USER = process.env.DATHOST_USERNAME;
 const DATHOST_PASS = process.env.DATHOST_PASSWORD;
 
+// V2 ABI
 const ESCROW_ABI = [
     "function distributeWinnings(bytes32 matchId, address winner) external",
-    "function refundMatch(bytes32 matchId, address player) external"
+    "function refundMatch(bytes32 matchId, address player) external",
+    "function matches(bytes32) view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive)"
 ];
 
-// Helper: Convert numeric ID to bytes32 for contract
-function numericToBytes32(num: number | string): string {
+// --- HELPERS ---
+function numericToBytes32(num) {
     const hex = BigInt(num).toString(16);
     return '0x' + hex.padStart(64, '0');
 }
@@ -30,28 +38,18 @@ function numericToBytes32(num: number | string): string {
 // ---------------------------------------------------------
 // 1. FORFEIT MONITOR (Rage Quit Detector)
 // ---------------------------------------------------------
-async function checkForfeits(supabase: SupabaseClient) {
-    console.log("--- Checking for Forfeits ---");
-
-    // Fetch LIVE matches where someone is disconnected
-    // logic: status = LIVE AND (p1_disconnect != null OR p2_disconnect != null)
+async function checkForfeits(supabase) {
     const { data: matches, error } = await supabase
         .from('matches')
         .select('*')
-        .eq('status', 'LIVE')
-        .not('player1_disconnect_time', 'is', null) // Supabase OR filter is tricky, so simplified loop
-    // If query is complex, just fetch all LIVE and filter in JS (assuming low volume of LIVE matches)
-    // Alternatively use .or()
+        .eq('status', 'LIVE');
 
-    if (!matches) return;
+    if (error || !matches || matches.length === 0) return;
 
-    // Filter in JS for simplicity/robustness
+    // Filter for disconnects (where disconnect_time is NOT null)
     const disconnectMatches = matches.filter(m => m.player1_disconnect_time || m.player2_disconnect_time);
 
-    if (disconnectMatches.length === 0) {
-        console.log("No disconnected players found.");
-        return;
-    }
+    if (disconnectMatches.length === 0) return;
 
     const FORFEIT_TIMEOUT_MS = 5 * 60 * 1000; // 5 Minutes
     const now = Date.now();
@@ -76,11 +74,8 @@ async function checkForfeits(supabase: SupabaseClient) {
         }
 
         if (winnerAddress) {
-            console.log(`🚨 AUTO-FORFEIT TRIGGERED for Match ${match.id}`);
-            console.log(`   Reason: ${disconnectedPlayer} disconnected for > 5 mins.`);
-            console.log(`   Winner: ${winnerAddress}`);
+            console.log(`🚨 AUTO-FORFEIT Match ${match.contract_match_id} | Winner: ${winnerAddress}`);
 
-            // A. Update DB -> COMPLETE (Pending Payout)
             await supabase
                 .from('matches')
                 .update({
@@ -90,16 +85,12 @@ async function checkForfeits(supabase: SupabaseClient) {
                 })
                 .eq('id', match.id);
 
-            // B. Reset Server (Kick everyone)
             await resetServer(supabase, match.id);
-        } else {
-            console.log(`Match ${match.id}: Player disconnected, but timer not expired yet.`);
         }
     }
 }
 
-async function resetServer(supabase: SupabaseClient, matchId: string) {
-    // Find assigned server
+async function resetServer(supabase, matchId) {
     const { data: server } = await supabase
         .from('game_servers')
         .select('*')
@@ -108,7 +99,7 @@ async function resetServer(supabase: SupabaseClient, matchId: string) {
 
     if (!server || !DATHOST_USER || !DATHOST_PASS) return;
 
-    console.log(`   Cleaning up server ${server.id}...`);
+    // console.log(`   🧹 Cleaning server ${server.id}...`);
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
     const cmds = ['kickall', 'css_endmatch'];
 
@@ -123,87 +114,77 @@ async function resetServer(supabase: SupabaseClient, matchId: string) {
                 body: new URLSearchParams({ line: cmd }).toString()
             });
         } catch (e) {
-            console.error("   RCON Error:", e);
+            console.error("   RCON Error:", e.message);
         }
     }
 
-    // Free DB
     await supabase
         .from('game_servers')
         .update({ status: 'FREE', current_match_id: null })
         .eq('id', server.id);
-
-    console.log("   Server freed.");
 }
 
-
 // ---------------------------------------------------------
-// 2. PAYOUT PROCESSOR (Blockchain)
+// 2. PAYOUT PROCESSOR (Winner gets paid)
 // ---------------------------------------------------------
-async function processPayouts(supabase: SupabaseClient, escrow: ethers.Contract) {
-    console.log("--- Checking for Payouts ---");
-
-    const { data: matches, error } = await supabase
+async function processPayouts(supabase, escrow) {
+    const { data: matches } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'COMPLETE')
         .eq('payout_status', 'PENDING');
 
-    if (error) {
-        console.error("DB Error:", error);
-        return;
-    }
+    if (!matches || matches.length === 0) return;
 
-    if (!matches || matches.length === 0) {
-        console.log("No pending payouts found.");
-        return;
-    }
-
-    console.log(`Found ${matches.length} matches to process.`);
+    console.log(`💰 Found ${matches.length} pending payouts.`);
 
     for (const match of matches) {
         const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-        console.log(`Processing Match ID: ${match.contract_match_id} (bytes32: ${matchIdBytes32}) | Winner: ${match.winner_address}`);
+        const winner = match.winner_address;
+
+        console.log(`   Paying Match ${match.contract_match_id}... -> ${winner}`);
 
         try {
-            // A. Mark as PROCESSING
             await supabase.from('matches').update({ payout_status: 'PROCESSING' }).eq('id', match.id);
 
-            // B. Execute Payout
-            const tx = await escrow.distributeWinnings(matchIdBytes32, match.winner_address);
-            console.log(`Tx Sent: ${tx.hash}`);
+            const tx = await escrow.distributeWinnings(matchIdBytes32, winner);
+            console.log(`   Tx Sent: ${tx.hash}`);
             await tx.wait();
-            console.log("Tx Confirmed!");
+            console.log("   Tx Confirmed!");
 
-            // C. Mark as PAID
             await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
 
-        } catch (e: any) {
-            console.error(`FAILED to pay match ${match.id}:`, e.message);
-            // D. Revert to FAILED
+        } catch (e) {
+            console.error(`   FAILED payout ${match.contract_match_id}:`, e.message);
             await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
         }
     }
 }
 
-
 // ---------------------------------------------------------
-// MAIN LOOP
+// MAIN
 // ---------------------------------------------------------
-async function main() {
+async function run() {
     if (!PRIVATE_KEY) {
-        console.error("ERROR: PAYOUT_PRIVATE_KEY not found in .env.local");
+        console.error("ERROR: PAYOUT_PRIVATE_KEY not found in .env");
         process.exit(1);
     }
+
+    // Simplified Log (User Request)
+    console.log(`[${new Date().toISOString()}] Checking for payouts...`);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
     const provider = new ethers.JsonRpcProvider(RPC_URL);
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    // Run sequencially
-    await checkForfeits(supabase);
-    await processPayouts(supabase, escrow);
+    try {
+        await checkForfeits(supabase);
+        await processPayouts(supabase, escrow);
+    } catch (e) {
+        console.error("Loop Error:", e);
+    }
 }
 
-main();
+// Run (Startup banner removed for cleanliness)
+run();
