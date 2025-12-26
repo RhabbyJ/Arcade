@@ -278,7 +278,7 @@ function ArcadeInterface() {
         const signer = await provider.getSigner();
         const usdc = new Contract(USDC_ADDRESS, USDC_ABI, signer);
         const escrow = new Contract(ESCROW_ADDRESS, DEBUG_ESCROW_ABI, signer);
-        const amount = parseUnits(DEPOSIT_AMOUNT, 18);
+        const amount = parseUnits(DEPOSIT_AMOUNT, 6); // USDC uses 6 decimals, not 18!
 
         // DEBUG: Verify Contract's USDC Address
         try {
