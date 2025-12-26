@@ -297,19 +297,6 @@ function ArcadeInterface() {
         const escrow = new Contract(ESCROW_ADDRESS, DEBUG_ESCROW_ABI, signer);
         const amount = parseUnits(DEPOSIT_AMOUNT, 18); // Testnet "Fake USDC" uses 18 decimals
 
-        // DEBUG: Verify Contract's USDC Address
-        try {
-            const contractUsdc = await escrow.usdc();
-            console.log(`Frontend USDC: ${USDC_ADDRESS}`);
-            console.log(`Contract USDC: ${contractUsdc}`);
-            if (contractUsdc.toLowerCase() !== USDC_ADDRESS.toLowerCase()) {
-                alert(`CRITICAL MISMATCH!\nContract expects USDC at: ${contractUsdc}\nFrontend using: ${USDC_ADDRESS}`);
-                throw new Error("USDC Address Mismatch");
-            }
-        } catch (e) {
-            console.error("Failed to verify contract USDC:", e);
-        }
-
         // Approve
         const allowance = await usdc.allowance(address, ESCROW_ADDRESS);
         if (allowance < amount) {
@@ -318,22 +305,35 @@ function ArcadeInterface() {
             await tx.wait();
         }
 
-        // Deposit
+        // Deposit to Contract
         addLog("Depositing 5 USDC...");
         const matchIdBytes32 = numericToBytes32(matchData.contract_match_id);
         const tx = await escrow.deposit(matchIdBytes32, amount, { gasLimit: 200000 });
+        addLog("Transaction sent, waiting for confirmation...");
         await tx.wait();
-        addLog("Deposit Confirmed!");
+        addLog("Deposit Confirmed on Blockchain!");
 
-        // C. Check if BOTH deposited to trigger LIVE
-        // We check if both Steam IDs are now present in DB
-        const { data: freshData } = await supabase.from('matches').select('*').eq('id', matchData.id).single();
-        if (freshData.player1_steam && freshData.player2_steam) {
-            addLog("Both Players Ready! Going LIVE...");
-            await supabase.from('matches').update({ status: 'LIVE' }).eq('id', matchData.id);
-        } else {
-            addLog("Waiting for opponent to deposit...");
-        }
+        // C. Submit TX Hash to API (Bot will verify on-chain)
+        addLog("Sending proof to server...");
+        const res = await fetch('/api/match/deposit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                matchId: matchData.id,
+                walletAddress: address,
+                txHash: tx.hash
+            })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+
+        addLog("✅ Deposit submitted! Waiting for bot verification...");
+        addLog("The server will automatically start when both players are verified.");
+        
+        // NOTE: We do NOT set status to LIVE here!
+        // The Bot will verify the tx_hash on-chain and set LIVE status.
+        // The Realtime listener will update our UI when status changes.
 
       } catch (e: any) {
           console.error(e);
