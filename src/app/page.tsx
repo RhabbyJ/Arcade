@@ -484,13 +484,34 @@ function ArcadeInterface() {
                             
                             {/* Cancel Button (Only for Creator) */}
                             {matchData.player1_address === address && (
-                                <button 
-                                    onClick={handleRefund}
-                                    disabled={isProcessing}
-                                    className="mt-4 text-xs text-red-400 hover:text-red-300 underline disabled:opacity-50"
-                                >
-                                    {isProcessing ? "Cancelling..." : "Cancel Match & Refund"}
-                                </button>
+                                <>
+                                    {/* LOBBY Phase: No deposit yet - simple DB cancel */}
+                                    {matchData.status === 'LOBBY' && (
+                                        <button 
+                                            onClick={async () => {
+                                                if (!confirm("Cancel this match?")) return;
+                                                setIsProcessing(true);
+                                                await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', matchData.id);
+                                                alert("Match cancelled.");
+                                                window.location.reload();
+                                            }}
+                                            disabled={isProcessing}
+                                            className="mt-4 text-xs text-gray-400 hover:text-gray-300 underline disabled:opacity-50"
+                                        >
+                                            {isProcessing ? "Cancelling..." : "Cancel Match"}
+                                        </button>
+                                    )}
+                                    {/* DEPOSITING Phase: P1 deposited - blockchain refund needed */}
+                                    {matchData.status === 'DEPOSITING' && p1Ready && (
+                                        <button 
+                                            onClick={handleRefund}
+                                            disabled={isProcessing}
+                                            className="mt-4 text-xs text-red-400 hover:text-red-300 underline disabled:opacity-50"
+                                        >
+                                            {isProcessing ? "Processing Refund..." : "Cancel & Refund Deposit"}
+                                        </button>
+                                    )}
+                                </>
                             )}
                         </div>
                       ) : !isDepositing ? (

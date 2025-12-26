@@ -72,7 +72,21 @@ export async function POST(req: NextRequest) {
             const contractMatch = await escrow.getMatch(matchIdBytes32);
             // Contract returns: [player1, player2, pot, isComplete, isActive]
             const player2 = contractMatch[1];
+            const pot = contractMatch[2];
             const isActive = contractMatch[4];
+
+            console.log(`On-chain status: P2=${player2}, Pot=${pot}, Active=${isActive}`);
+
+            // If no pot, nothing to refund on-chain
+            if (pot.toString() === '0') {
+                console.log("No on-chain deposit found. Skipping blockchain refund.");
+                // Just update DB and return success
+                await supabase
+                    .from('matches')
+                    .update({ status: 'CANCELLED' })
+                    .eq('id', matchId);
+                return NextResponse.json({ success: true, message: "Match cancelled (no deposit to refund)" });
+            }
 
             if (!isActive) {
                 return NextResponse.json({ error: "Match already inactive on-chain" }, { status: 400 });
