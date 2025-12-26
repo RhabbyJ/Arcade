@@ -5,7 +5,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useAccount } from 'wagmi';
 import { parseUnits, Contract, BrowserProvider } from 'ethers';
 import { supabase } from '@/lib/supabase';
-import { USDC_ABI, ESCROW_ABI } from '@/lib/abi';
+import { USDC_ABI, ESCROW_ABI, numericToBytes32 } from '@/lib/abi';
 import { MatchStatusBadge } from '@/components/MatchStatusBadge';
 import { useMatchRecovery } from '@/hooks/useMatchRecovery';
 import { useSearchParams } from 'next/navigation';
@@ -290,7 +290,8 @@ function ArcadeInterface() {
 
         // Deposit
         addLog("Depositing 5 USDC...");
-        const tx = await escrow.deposit(matchData.contract_match_id, amount, { gasLimit: 200000 });
+        const matchIdBytes32 = numericToBytes32(matchData.contract_match_id);
+        const tx = await escrow.deposit(matchIdBytes32, amount, { gasLimit: 200000 });
         await tx.wait();
         addLog("Deposit Confirmed!");
 
