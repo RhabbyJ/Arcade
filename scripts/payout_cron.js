@@ -155,12 +155,13 @@ async function assignServers(supabase) {
             }
         }
 
-        // Update match to LIVE
+        // Update match to LIVE (server is tracked via game_servers.current_match_id)
         const { error: liveError } = await supabase
             .from('matches')
             .update({
                 status: 'LIVE',
-                server_id: server.id,
+                // Note: server_id removed due to UUID/int type mismatch
+                // Server assignment is tracked via game_servers.current_match_id instead
                 server_assigned_at: new Date().toISOString()
             })
             .eq('id', match.id);
