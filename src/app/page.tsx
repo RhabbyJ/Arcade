@@ -37,7 +37,7 @@ function ArcadeInterface() {
   const [serverReady, setServerReady] = useState(false);
 
   // Recovery Hook
-  const { recoveredMatch } = useMatchRecovery();
+  const { recoveredMatch, loading: recoveryLoading } = useMatchRecovery();
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -159,6 +159,23 @@ function ArcadeInterface() {
   const createLobby = async () => {
       if (!steamData) return alert("Link Steam Account First!");
       setIsProcessing(true);
+      
+      // DUPLICATE PREVENTION: Check if user already has an active match
+      const { data: existingMatch } = await supabase
+          .from('matches')
+          .select('*')
+          .or(`player1_address.eq.${address},player2_address.eq.${address}`)
+          .in('status', ['LOBBY', 'DEPOSITING', 'VERIFYING_PAYMENT', 'PENDING', 'LIVE'])
+          .limit(1)
+          .maybeSingle();
+
+      if (existingMatch) {
+          alert(`You already have an active match! (ID: ${existingMatch.contract_match_id})`);
+          setMatchData(existingMatch);
+          setIsProcessing(false);
+          return;
+      }
+      
       const numericMatchId = Date.now();
       
       const { data, error } = await supabase
@@ -355,6 +372,16 @@ function ArcadeInterface() {
 
   // 4. VIEW LOGIC
   const renderView = () => {
+      // LOADING GUARD: Wait for recovery check before showing any options
+      if (recoveryLoading) {
+          return (
+              <div className="flex flex-col items-center gap-4 py-12">
+                  <div className="w-12 h-12 border-4 border-green-500 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-gray-400">Checking for active matches...</p>
+              </div>
+          );
+      }
+
       if (!matchData) {
           // VIEW_HOME
           return (
