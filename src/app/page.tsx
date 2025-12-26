@@ -215,6 +215,37 @@ function ArcadeInterface() {
       setIsProcessing(false);
   };
 
+  // 4. REFUND (New Feature)
+  const handleRefund = async () => {
+      if (!confirm("Are you sure you want to cancel this match and refund your deposit?")) return;
+      setIsProcessing(true);
+      addLog("Initiating Refund...");
+
+      try {
+          const res = await fetch('/api/match/refund', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                  matchId: matchData.id,
+                  walletAddress: address
+              })
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) throw new Error(data.error);
+
+          alert("✅ Refund Successful! Your USDC has been returned.");
+          window.location.reload();
+
+      } catch (e: any) {
+          console.error(e);
+          alert("Refund Failed: " + e.message);
+          setIsProcessing(false);
+      }
+  };
+
+  // 5. DEPOSIT
   const startDepositPhase = async () => {
       addLog("Starting Deposit Phase...");
       await supabase
@@ -431,7 +462,23 @@ function ArcadeInterface() {
                   {/* ACTION AREA */}
                   <div className="bg-black/40 p-6 rounded-xl border border-gray-800 flex flex-col items-center gap-4">
                       {!hasP2 ? (
-                          </div>
+                          <div className="flex flex-col gap-4 w-full">
+                            <p className="text-sm text-gray-400">Share this link with your opponent:</p>
+                            <div className="bg-black/40 p-3 rounded font-mono text-xs select-all break-all border border-gray-700">
+                                {`${window.location.origin}?match=${matchData.contract_match_id}`}
+                            </div>
+                            
+                            {/* Cancel Button (Only for Creator) */}
+                            {matchData.player1_address === address && (
+                                <button 
+                                    onClick={handleRefund}
+                                    disabled={isProcessing}
+                                    className="mt-4 text-xs text-red-400 hover:text-red-300 underline disabled:opacity-50"
+                                >
+                                    {isProcessing ? "Cancelling..." : "Cancel Match & Refund"}
+                                </button>
+                            )}
+                        </div>
                       ) : !isDepositing ? (
                           isHost ? (
                               <button 
