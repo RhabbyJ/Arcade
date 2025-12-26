@@ -53,13 +53,12 @@ export async function POST(req: NextRequest) {
 
         // 4. Save the tx_hash (Bot will verify on-chain)
         const updateField = isPlayer1 ? 'p1_tx_hash' : 'p2_tx_hash';
-        const steamField = isPlayer1 ? 'player1_steam' : 'player2_steam';
 
         const { error: updateError } = await supabase
             .from('matches')
             .update({
                 [updateField]: txHash,
-                status: 'DEPOSITING' // Ensure we're in DEPOSITING state
+                status: 'DEPOSITING'
             })
             .eq('id', matchId);
 
