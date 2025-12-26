@@ -33,7 +33,7 @@ export function useMatchRecovery() {
                     .from('matches')
                     .select('*')
                     .or(`player1_address.eq.${address},player2_address.eq.${address}`)
-                    .in('status', ['LOBBY', 'DEPOSITING', 'VERIFYING_PAYMENT', 'PENDING', 'LIVE'])
+                    .in('status', ['LOBBY', 'DEPOSITING', 'PENDING', 'LIVE'])
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .maybeSingle();
