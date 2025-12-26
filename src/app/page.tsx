@@ -280,6 +280,19 @@ function ArcadeInterface() {
         const escrow = new Contract(ESCROW_ADDRESS, DEBUG_ESCROW_ABI, signer);
         const amount = parseUnits(DEPOSIT_AMOUNT, 18);
 
+        // DEBUG: Verify Contract's USDC Address
+        try {
+            const contractUsdc = await escrow.usdc();
+            console.log(`Frontend USDC: ${USDC_ADDRESS}`);
+            console.log(`Contract USDC: ${contractUsdc}`);
+            if (contractUsdc.toLowerCase() !== USDC_ADDRESS.toLowerCase()) {
+                alert(`CRITICAL MISMATCH!\nContract expects USDC at: ${contractUsdc}\nFrontend using: ${USDC_ADDRESS}`);
+                throw new Error("USDC Address Mismatch");
+            }
+        } catch (e) {
+            console.error("Failed to verify contract USDC:", e);
+        }
+
         // Approve
         const allowance = await usdc.allowance(address, ESCROW_ADDRESS);
         if (allowance < amount) {
