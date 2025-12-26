@@ -185,6 +185,68 @@ export async function POST(req: Request) {
             return NextResponse.json({ received: true });
         }
 
+        // NEW: HANDLE PLAYER DISCONNECT
+        if (payload.event === 'player_disconnect') {
+            const { matchid, player } = payload;
+            if (!player?.steamid) return NextResponse.json({ received: true });
+
+            console.log(`Player Disconnect: ${player.name} (${player.steamid})`);
+
+            // Update DB: Set disconnect timestamp
+            // We find the match and verify which player it is
+            const { data: match } = await supabase
+                .from('matches')
+                .select('*')
+                .eq('contract_match_id', matchid) // Assuming payload uses numeric ID? Or check 'id' vs 'contract_match_id'
+                // MatchZy often sends numeric ID if configured, or we need to map it.
+                // Safest to search by Steam ID + LIVE status if matchid is unreliable.
+                .eq('status', 'LIVE')
+                .or(`player1_steam.eq.${player.steamid},player2_steam.eq.${player.steamid}`)
+                .single();
+
+            if (match) {
+                const isP1 = match.player1_steam === player.steamid;
+                const updateCol = isP1 ? 'player1_disconnect_time' : 'player2_disconnect_time';
+
+                await supabase
+                    .from('matches')
+                    .update({ [updateCol]: new Date().toISOString() })
+                    .eq('id', match.id);
+
+                console.log(`Updated ${updateCol} for match ${match.id}`);
+            }
+            return NextResponse.json({ received: true });
+        }
+
+        // NEW: HANDLE PLAYER CONNECT
+        if (payload.event === 'player_connect') {
+            const { matchid, player } = payload;
+            if (!player?.steamid) return NextResponse.json({ received: true });
+
+            console.log(`Player Connect: ${player.name} (${player.steamid})`);
+
+            // Update DB: usage of NULL to indicate "Connected"
+            const { data: match } = await supabase
+                .from('matches')
+                .select('*')
+                .eq('status', 'LIVE')
+                .or(`player1_steam.eq.${player.steamid},player2_steam.eq.${player.steamid}`)
+                .single();
+
+            if (match) {
+                const isP1 = match.player1_steam === player.steamid;
+                const updateCol = isP1 ? 'player1_disconnect_time' : 'player2_disconnect_time';
+
+                await supabase
+                    .from('matches')
+                    .update({ [updateCol]: null })
+                    .eq('id', match.id);
+
+                console.log(`Cleared ${updateCol} (Reconnected) for match ${match.id}`);
+            }
+            return NextResponse.json({ received: true });
+        }
+
         return NextResponse.json({ received: true });
     } catch (error) {
         console.error('Webhook error:', error);
