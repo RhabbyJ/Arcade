@@ -110,14 +110,18 @@ function ArcadeInterface() {
           filter: `id=eq.${matchData.id}`,
         },
         (payload) => {
-          console.log('Realtime Update:', payload.new);
-          setMatchData(payload.new);
+          console.log('🔴 Realtime Update:', payload.new);
+          const newData = payload.new as any;
+          setMatchData(newData);
           
-          if (payload.new.status === 'DEPOSITING' && matchData.status !== 'DEPOSITING') {
-              addLog("Host started match! Deposit Phase Active.");
+          // Log status transitions
+          if (newData.status !== matchData.status) {
+              console.log(`📊 Status changed: ${matchData.status} → ${newData.status}`);
+              addLog(`Match status: ${newData.status}`);
           }
-          if (payload.new.status === 'LIVE' && matchData.status !== 'LIVE') {
-              addLog("Match is LIVE! Go go go!");
+          
+          if (newData.status === 'LIVE') {
+              addLog("🚀 Match is LIVE! Server is ready!");
           }
         }
       )

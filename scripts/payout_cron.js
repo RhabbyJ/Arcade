@@ -101,6 +101,18 @@ async function assignServers(supabase) {
     if (error || !matches || matches.length === 0) return;
 
     for (const match of matches) {
+        // RACE CONDITION GUARD: Re-fetch to ensure match wasn't already processed
+        const { data: freshMatch } = await supabase
+            .from('matches')
+            .select('status, server_id')
+            .eq('id', match.id)
+            .single();
+
+        if (!freshMatch || freshMatch.status !== 'DEPOSITING' || freshMatch.server_id) {
+            // Already processed by another cycle, skip
+            continue;
+        }
+
         console.log(`🎮 Both players deposited for match ${match.contract_match_id}. Assigning server...`);
 
         // Find a FREE server
