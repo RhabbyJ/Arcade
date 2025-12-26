@@ -156,7 +156,7 @@ async function assignServers(supabase) {
         }
 
         // Update match to LIVE
-        await supabase
+        const { error: liveError } = await supabase
             .from('matches')
             .update({
                 status: 'LIVE',
@@ -165,7 +165,11 @@ async function assignServers(supabase) {
             })
             .eq('id', match.id);
 
-        console.log(`   🚀 Match ${match.contract_match_id} is now LIVE on ${server.name}`);
+        if (liveError) {
+            console.error(`   ❌ Failed to set LIVE status:`, liveError);
+        } else {
+            console.log(`   🚀 Match ${match.contract_match_id} is now LIVE on ${server.name}`);
+        }
     }
 }
 
