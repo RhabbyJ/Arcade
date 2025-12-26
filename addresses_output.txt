@@ -1,0 +1,16 @@
+
+🔍 --- CONFIGURATION CHECK ---
+
+✅ USDC Address (Base Sepolia):
+   0xC57808401Bec09Cf9527e36A251009A1160a137e
+
+✅ Bot Address (Derived from Private Key):
+   0xd7AE9F800FFa00FF63309250a38851410B5A072A
+   (This is the wallet on your VPS/Script)
+
+❓ Treasury Address:
+   You didn't specify one in the config.
+   RECOMMENDATION: Use your main MetaMask address (the one you are deploying with).
+   PRO TIP: You can change this later using setTreasury()
+
+-----------------------------------

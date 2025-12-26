@@ -7,15 +7,21 @@ import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!; // Ideally use SERVICE_ROLE key for backend, but Anon works if RLS allows
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
-const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY; // Needs to be added to .env.local
+const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const RPC_URL = "https://sepolia.base.org";
 
 const ESCROW_ABI = [
-    "function payout(uint256 _matchId, address _winner) external",
-    "function emergencyWithdraw(uint256 _matchId) external"
+    "function distributeWinnings(bytes32 matchId, address winner) external",
+    "function refundMatch(bytes32 matchId, address player) external"
 ];
+
+// Convert numeric ID to bytes32 for contract
+function numericToBytes32(num: number | string): string {
+    const hex = BigInt(num).toString(16);
+    return '0x' + hex.padStart(64, '0');
+}
 
 async function main() {
     console.log("--- STARTING PAYOUT WORKER ---");
@@ -53,7 +59,9 @@ async function main() {
     console.log(`Found ${matches.length} matches to process.`);
 
     for (const match of matches) {
-        console.log(`Processing Match ID: ${match.contract_match_id} | Winner: ${match.winner_address}`);
+        // Convert numeric ID to bytes32
+        const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+        console.log(`Processing Match ID: ${match.contract_match_id} (bytes32: ${matchIdBytes32}) | Winner: ${match.winner_address}`);
 
         try {
             // A. Mark as PROCESSING (Double-spend protection)
@@ -62,8 +70,8 @@ async function main() {
                 .update({ payout_status: 'PROCESSING' })
                 .eq('id', match.id);
 
-            // B. Execute Payout
-            const tx = await escrow.payout(match.contract_match_id, match.winner_address);
+            // B. Execute Payout (V2: distributeWinnings with bytes32)
+            const tx = await escrow.distributeWinnings(matchIdBytes32, match.winner_address);
             console.log(`Tx Sent: ${tx.hash}`);
             await tx.wait();
             console.log("Tx Confirmed!");
@@ -77,10 +85,10 @@ async function main() {
         } catch (e: any) {
             console.error(`FAILED to pay match ${match.id}:`, e.message);
 
-            // D. Revert to FAILED (or MANUAL_REVIEW)
+            // D. Revert to FAILED
             await supabase
                 .from('matches')
-                .update({ payout_status: 'FAILED' }) // Or 'PENDING' to retry? FAILED is safer.
+                .update({ payout_status: 'FAILED' })
                 .eq('id', match.id);
         }
     }

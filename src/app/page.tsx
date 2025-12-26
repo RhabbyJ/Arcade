@@ -431,19 +431,6 @@ function ArcadeInterface() {
                   {/* ACTION AREA */}
                   <div className="bg-black/40 p-6 rounded-xl border border-gray-800 flex flex-col items-center gap-4">
                       {!hasP2 ? (
-                          <div className="flex flex-col items-center gap-2 w-full">
-                              <p className="text-sm text-gray-400">Share this link to invite Player 2:</p>
-                              <div className="flex gap-2 w-full max-w-md">
-                                  <code className="flex-1 bg-black p-3 rounded border border-gray-700 text-sm text-gray-300 truncate">
-                                      {window.location.origin}?match={matchData.contract_match_id}
-                                  </code>
-                                  <button 
-                                      onClick={() => navigator.clipboard.writeText(`${window.location.origin}?match=${matchData.contract_match_id}`)}
-                                      className="bg-blue-600 hover:bg-blue-500 px-4 rounded font-bold"
-                                  >
-                                      COPY
-                                  </button>
-                              </div>
                           </div>
                       ) : !isDepositing ? (
                           isHost ? (
