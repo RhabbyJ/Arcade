@@ -180,7 +180,7 @@ async function assignServers(supabase) {
 async function checkTimeouts(supabase, escrow) {
     const now = Date.now();
     const LOBBY_TIMEOUT_MS = 15 * 60 * 1000;    // 15 minutes
-    const DEPOSIT_TIMEOUT_MS = 10 * 60 * 1000;  // 10 minutes
+    const DEPOSIT_TIMEOUT_MS = 30 * 1000;       // 30 seconds for testing (change to 10 * 60 * 1000 for production)
 
     // A. Check stale WAITING/LOBBY matches
     const { data: waitingMatches } = await supabase

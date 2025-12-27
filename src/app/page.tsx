@@ -22,6 +22,48 @@ const DEBUG_ESCROW_ABI = [
   "function usdc() external view returns (address)"
 ];
 
+// Deposit Countdown Timer Component
+const DEPOSIT_TIMEOUT_MS = 30 * 1000; // 30 seconds for testing (change to 10 * 60 * 1000 for production)
+
+function DepositTimer({ createdAt }: { createdAt: string }) {
+    const [timeLeft, setTimeLeft] = useState<number>(0);
+
+    useEffect(() => {
+        const calculateTimeLeft = () => {
+            const created = new Date(createdAt).getTime();
+            const deadline = created + DEPOSIT_TIMEOUT_MS;
+            const remaining = Math.max(0, deadline - Date.now());
+            setTimeLeft(remaining);
+        };
+
+        calculateTimeLeft();
+        const interval = setInterval(calculateTimeLeft, 1000);
+        return () => clearInterval(interval);
+    }, [createdAt]);
+
+    const minutes = Math.floor(timeLeft / 60000);
+    const seconds = Math.floor((timeLeft % 60000) / 1000);
+    const isUrgent = timeLeft < 2 * 60 * 1000; // Less than 2 minutes
+
+    if (timeLeft === 0) {
+        return (
+            <div className="text-center">
+                <p className="text-xs text-red-400">TIME EXPIRED</p>
+                <p className="text-red-500 font-bold">MATCH TIMING OUT</p>
+            </div>
+        );
+    }
+
+    return (
+        <div className="text-center">
+            <p className="text-xs text-gray-400">TIME TO DEPOSIT</p>
+            <p className={`font-mono text-xl font-bold ${isUrgent ? 'text-red-400 animate-pulse' : 'text-green-400'}`}>
+                {String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}
+            </p>
+        </div>
+    );
+}
+
 function ArcadeInterface() {
   const { address, isConnected, connector } = useAccount();
   const searchParams = useSearchParams();
@@ -451,6 +493,9 @@ function ArcadeInterface() {
                           <p className="text-xs text-gray-400">MATCH ID</p>
                           <p className="font-mono text-blue-400">{matchData.contract_match_id}</p>
                       </div>
+                      {isDepositing && (
+                          <DepositTimer createdAt={matchData.created_at} />
+                      )}
                       <div className="text-right">
                           <p className="text-xs text-gray-400">STATUS</p>
                           <p className={`font-bold ${isDepositing ? 'text-yellow-400' : 'text-gray-300'}`}>
