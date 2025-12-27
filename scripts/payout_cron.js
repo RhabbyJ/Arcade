@@ -218,8 +218,10 @@ async function checkTimeouts(supabase, escrow) {
 
     if (depositingMatches) {
         for (const match of depositingMatches) {
-            const createdAt = new Date(match.created_at).getTime();
-            const isStale = now - createdAt > DEPOSIT_TIMEOUT_MS;
+            // Use deposit_started_at if available, fallback to created_at for backwards compat
+            const startTime = match.deposit_started_at || match.created_at;
+            const startedAt = new Date(startTime).getTime();
+            const isStale = now - startedAt > DEPOSIT_TIMEOUT_MS;
 
             if (!isStale) continue;
 

@@ -61,11 +61,15 @@ export async function POST(req: NextRequest) {
         // 4. Save the tx_hash (Bot will verify on-chain)
         const updateField = isPlayer1 ? 'p1_tx_hash' : 'p2_tx_hash';
 
+        // Only set deposit_started_at if this is the first deposit (status wasn't DEPOSITING yet)
+        const isFirstDeposit = match.status !== 'DEPOSITING';
+
         const { error: updateError } = await supabase
             .from('matches')
             .update({
                 [updateField]: txHash,
-                status: 'DEPOSITING'
+                status: 'DEPOSITING',
+                ...(isFirstDeposit && { deposit_started_at: new Date().toISOString() })
             })
             .eq('id', matchId);
 

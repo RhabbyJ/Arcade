@@ -25,13 +25,15 @@ const DEBUG_ESCROW_ABI = [
 // Deposit Countdown Timer Component
 const DEPOSIT_TIMEOUT_MS = 30 * 1000; // 30 seconds for testing (change to 10 * 60 * 1000 for production)
 
-function DepositTimer({ createdAt }: { createdAt: string }) {
-    const [timeLeft, setTimeLeft] = useState<number>(0);
+function DepositTimer({ startedAt }: { startedAt: string | null }) {
+    const [timeLeft, setTimeLeft] = useState<number>(DEPOSIT_TIMEOUT_MS);
 
     useEffect(() => {
+        if (!startedAt) return; // Wait until deposit phase starts
+        
         const calculateTimeLeft = () => {
-            const created = new Date(createdAt).getTime();
-            const deadline = created + DEPOSIT_TIMEOUT_MS;
+            const started = new Date(startedAt).getTime();
+            const deadline = started + DEPOSIT_TIMEOUT_MS;
             const remaining = Math.max(0, deadline - Date.now());
             setTimeLeft(remaining);
         };
@@ -39,11 +41,20 @@ function DepositTimer({ createdAt }: { createdAt: string }) {
         calculateTimeLeft();
         const interval = setInterval(calculateTimeLeft, 1000);
         return () => clearInterval(interval);
-    }, [createdAt]);
+    }, [startedAt]);
 
     const minutes = Math.floor(timeLeft / 60000);
     const seconds = Math.floor((timeLeft % 60000) / 1000);
     const isUrgent = timeLeft < 2 * 60 * 1000; // Less than 2 minutes
+
+    if (!startedAt) {
+        return (
+            <div className="text-center">
+                <p className="text-xs text-gray-400">TIME TO DEPOSIT</p>
+                <p className="font-mono text-xl font-bold text-green-400">00:30</p>
+            </div>
+        );
+    }
 
     if (timeLeft === 0) {
         return (
@@ -320,7 +331,10 @@ function ArcadeInterface() {
       addLog("Starting Deposit Phase...");
       await supabase
         .from('matches')
-        .update({ status: 'DEPOSITING' })
+        .update({ 
+            status: 'DEPOSITING',
+            deposit_started_at: new Date().toISOString() // Accurate timer start
+        })
         .eq('id', matchData.id);
   };
 
@@ -501,7 +515,7 @@ function ArcadeInterface() {
                           <p className="font-mono text-blue-400">{matchData.contract_match_id}</p>
                       </div>
                       {isDepositing && (
-                          <DepositTimer createdAt={matchData.created_at} />
+                          <DepositTimer startedAt={matchData.deposit_started_at} />
                       )}
                       <div className="text-right">
                           <p className="text-xs text-gray-400">STATUS</p>
