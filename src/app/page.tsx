@@ -328,14 +328,22 @@ function ArcadeInterface() {
 
   // 5. DEPOSIT
   const startDepositPhase = async () => {
+      const now = new Date().toISOString();
+      console.log("🚀 Starting Deposit Phase at:", now);
       addLog("Starting Deposit Phase...");
-      await supabase
+      const { error } = await supabase
         .from('matches')
         .update({ 
             status: 'DEPOSITING',
-            deposit_started_at: new Date().toISOString() // Accurate timer start
+            deposit_started_at: now
         })
         .eq('id', matchData.id);
+      
+      if (error) {
+          console.error("❌ Failed to start deposit:", error);
+      } else {
+          console.log("✅ Deposit phase started, deposit_started_at:", now);
+      }
   };
 
   const handleDeposit = async () => {
