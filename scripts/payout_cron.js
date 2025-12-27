@@ -248,7 +248,7 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
         console.log(`   🔒 Setting match ${match.contract_match_id} to CANCELLED...`);
         const { error: cancelError } = await supabase
             .from('matches')
-            .update({ status: 'CANCELLED', payout_status: 'REFUNDING' })
+            .update({ status: 'CANCELLED' })  // Only status, payout_status updated after refund
             .eq('id', match.id);
 
         if (cancelError) {
