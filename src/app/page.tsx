@@ -166,11 +166,10 @@ function ArcadeInterface() {
               addLog("🚀 Match is LIVE! Server is ready!");
           }
           
-          // Handle CANCELLED - clear match and notify user
+          // Handle CANCELLED - show Tombstone UI (don't clear matchData)
           if (newData.status === 'CANCELLED') {
               addLog("❌ Match was cancelled or timed out.");
-              alert("⏰ This match has been cancelled (timeout or refund). Returning to lobby.");
-              setMatchData(null);
+              // matchData stays set so Tombstone UI renders
           }
         }
       )
@@ -704,6 +703,84 @@ function ArcadeInterface() {
                   </div>
                   <button onClick={() => window.location.href = '/'} className="mt-6 text-gray-400 underline">
                       Back to Home
+                  </button>
+              </div>
+          );
+      }
+
+      // VIEW_CANCELLED (Tombstone)
+      if (matchData.status === 'CANCELLED') {
+          const isPlayer1 = matchData.player1_address?.toLowerCase() === address?.toLowerCase();
+          const myDeposit = isPlayer1 ? matchData.p1_deposited : matchData.p2_deposited;
+          const opponentDeposit = isPlayer1 ? matchData.p2_deposited : matchData.p1_deposited;
+          
+          let reason = "Match was cancelled.";
+          if (myDeposit && !opponentDeposit) {
+              reason = "⏰ Opponent failed to deposit in time.";
+          } else if (!myDeposit && opponentDeposit) {
+              reason = "⏰ You failed to deposit in time.";
+          } else if (!myDeposit && !opponentDeposit) {
+              reason = "Neither player deposited.";
+          }
+
+          return (
+              <div className="bg-gray-800/80 p-8 rounded-xl border border-red-900 text-center w-full max-w-lg">
+                  {/* Header */}
+                  <div className="flex items-center justify-center gap-3 mb-6">
+                      <div className="w-12 h-12 bg-red-900/50 rounded-full flex items-center justify-center">
+                          <span className="text-2xl">❌</span>
+                      </div>
+                      <h2 className="text-3xl font-black text-red-400">MATCH CANCELLED</h2>
+                  </div>
+
+                  {/* Reason */}
+                  <p className="text-gray-300 mb-6">{reason}</p>
+
+                  {/* Match Details */}
+                  <div className="bg-black/50 p-4 rounded-lg mb-6 text-left">
+                      <div className="flex justify-between text-sm mb-2">
+                          <span className="text-gray-500">Match ID</span>
+                          <span className="font-mono text-gray-300">{matchData.contract_match_id}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                          <span className="text-gray-500">Status</span>
+                          <span className="text-red-400">{matchData.payout_status || 'CANCELLED'}</span>
+                      </div>
+                  </div>
+
+                  {/* Refund Info */}
+                  {myDeposit && (
+                      <div className="bg-green-900/30 border border-green-700 p-4 rounded-lg mb-6">
+                          <p className="text-green-400 font-bold mb-2">✅ Refund Processed</p>
+                          <p className="text-sm text-gray-300">Your 5.00 USDC has been returned to your wallet.</p>
+                          {matchData.refund_tx_hash && (
+                              <a 
+                                  href={`https://sepolia.basescan.org/tx/${matchData.refund_tx_hash}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-blue-400 hover:text-blue-300 underline mt-2 inline-block"
+                              >
+                                  View Transaction ↗
+                              </a>
+                          )}
+                      </div>
+                  )}
+
+                  {!myDeposit && (
+                      <div className="bg-gray-700/30 border border-gray-600 p-4 rounded-lg mb-6">
+                          <p className="text-gray-400">No funds were deducted from your wallet.</p>
+                      </div>
+                  )}
+
+                  {/* Return to Lobby */}
+                  <button
+                      onClick={() => {
+                          setMatchData(null);
+                          window.history.pushState({}, '', window.location.pathname);
+                      }}
+                      className="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white font-bold py-3 px-8 rounded-lg w-full transition-all"
+                  >
+                      Return to Lobby
                   </button>
               </div>
           );
