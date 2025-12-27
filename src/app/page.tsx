@@ -698,16 +698,26 @@ function ArcadeInterface() {
                 <p className="text-xs text-gray-600 mb-2">DEBUG ZONE</p>
                 <button 
                     onClick={async () => {
-                        if(!confirm("⚠️ NUKE: This will cancel ALL your active matches. Are you sure?")) return;
-                        const { error } = await supabase
+                        if(!confirm("⚠️ NUKE: This will cancel ALL your active matches and release servers. Are you sure?")) return;
+                        
+                        // 1. Cancel all active matches
+                        const { error: matchError } = await supabase
                             .from('matches')
                             .update({ status: 'CANCELLED' })
                             .or(`player1_address.eq.${address},player2_address.eq.${address}`)
                             .in('status', ['LOBBY', 'PENDING', 'DEPOSITING', 'LIVE']);
                         
-                        if (error) alert("Nuke failed: " + error.message);
-                        else {
-                            alert("💥 All active matches cancelled.");
+                        // 2. Release any servers that were assigned to my matches
+                        const { error: serverError } = await supabase
+                            .from('game_servers')
+                            .update({ status: 'FREE', current_match_id: null })
+                            .eq('status', 'BUSY');
+                        
+                        if (matchError || serverError) {
+                            alert("Nuke failed: " + (matchError?.message || serverError?.message));
+                        } else {
+                            alert("💥 All active matches cancelled and servers released.");
+                            setMatchData(null);
                             window.location.reload();
                         }
                     }}
