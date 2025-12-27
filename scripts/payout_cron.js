@@ -245,10 +245,17 @@ async function checkTimeouts(supabase, escrow) {
 async function refundPlayer(supabase, escrow, match, playerAddress) {
     try {
         // FIRST: Mark as CANCELLED immediately to prevent race conditions
-        await supabase
+        console.log(`   🔒 Setting match ${match.contract_match_id} to CANCELLED...`);
+        const { error: cancelError } = await supabase
             .from('matches')
             .update({ status: 'CANCELLED', payout_status: 'REFUNDING' })
             .eq('id', match.id);
+
+        if (cancelError) {
+            console.error(`   ❌ Failed to set CANCELLED:`, cancelError);
+            return; // Don't proceed if we can't cancel
+        }
+        console.log(`   ✅ Match marked CANCELLED.`);
 
         const matchIdBytes32 = numericToBytes32(match.contract_match_id);
 
