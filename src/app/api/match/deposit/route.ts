@@ -35,7 +35,14 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Match not found" }, { status: 404 });
         }
 
-        // 2. Determine which player is depositing
+        // 2. Check if match is still accepting deposits
+        if (!['LOBBY', 'DEPOSITING'].includes(match.status)) {
+            return NextResponse.json({
+                error: `Match is ${match.status}. Cannot accept deposits.`
+            }, { status: 400 });
+        }
+
+        // 3. Determine which player is depositing
         const isPlayer1 = match.player1_address?.toLowerCase() === walletAddress.toLowerCase();
         const isPlayer2 = match.player2_address?.toLowerCase() === walletAddress.toLowerCase();
 

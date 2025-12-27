@@ -165,6 +165,13 @@ function ArcadeInterface() {
           if (newData.status === 'LIVE') {
               addLog("🚀 Match is LIVE! Server is ready!");
           }
+          
+          // Handle CANCELLED - clear match and notify user
+          if (newData.status === 'CANCELLED') {
+              addLog("❌ Match was cancelled or timed out.");
+              alert("⏰ This match has been cancelled (timeout or refund). Returning to lobby.");
+              setMatchData(null);
+          }
         }
       )
       .subscribe();
