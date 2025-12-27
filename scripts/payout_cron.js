@@ -232,6 +232,12 @@ async function checkTimeouts(supabase, escrow) {
 
 async function refundPlayer(supabase, escrow, match, playerAddress) {
     try {
+        // FIRST: Mark as CANCELLED immediately to prevent race conditions
+        await supabase
+            .from('matches')
+            .update({ status: 'CANCELLED', payout_status: 'REFUNDING' })
+            .eq('id', match.id);
+
         const matchIdBytes32 = numericToBytes32(match.contract_match_id);
 
         // Check if there's actually money on-chain
@@ -242,15 +248,22 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
             const tx = await escrow.refundMatch(matchIdBytes32, playerAddress);
             console.log(`   Refund TX: ${tx.hash}`);
             await tx.wait();
+            console.log(`   Refund confirmed.`);
         }
 
+        // Update payout status to REFUNDED
         await supabase
             .from('matches')
-            .update({ status: 'CANCELLED', payout_status: 'REFUNDED' })
+            .update({ payout_status: 'REFUNDED' })
             .eq('id', match.id);
 
     } catch (e) {
         console.error(`   Refund error for ${match.contract_match_id}:`, e.message);
+        // Still mark as cancelled even if refund fails
+        await supabase
+            .from('matches')
+            .update({ status: 'CANCELLED', payout_status: 'REFUND_FAILED' })
+            .eq('id', match.id);
     }
 }
 
