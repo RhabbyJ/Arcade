@@ -11,7 +11,8 @@ export default function SteamLinkButton({ className }: SteamLinkButtonProps) {
 
   const handleSteamLink = () => {
     if (!address) return alert("Connect Wallet First!");
-    window.location.href = `/api/auth/steam/login?address=${address}`;
+    const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `/api/auth/steam/login?address=${address}&returnTo=${returnTo}`;
   };
 
   return (

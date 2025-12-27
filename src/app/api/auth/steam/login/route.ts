@@ -8,6 +8,7 @@ const STEAM_OPENID_URL = 'https://steamcommunity.com/openid';
 export async function GET(req: Request): Promise<Response> {
     const { searchParams } = new URL(req.url);
     const walletAddress = searchParams.get('address');
+    const returnTo = searchParams.get('returnTo'); // NEW: Capture intended destination
 
     if (!walletAddress) {
         return NextResponse.json({ error: 'Wallet address required' }, { status: 400 });
@@ -43,6 +44,17 @@ export async function GET(req: Request): Promise<Response> {
                     maxAge: 60 * 10, // 10 minutes
                     path: '/'
                 });
+
+                // NEW: Store the returnTo URL if provided
+                if (returnTo) {
+                    cookieStore.set('steam_return_to', returnTo, {
+                        httpOnly: true,
+                        secure: isSecure,
+                        sameSite: 'lax',
+                        maxAge: 60 * 10, // 10 minutes
+                        path: '/'
+                    });
+                }
 
                 resolve(NextResponse.redirect(authUrl));
             }

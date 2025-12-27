@@ -101,6 +101,19 @@ export async function GET(req: Request): Promise<Response> {
                     path: '/'
                 });
 
+                // NEW: Check for returnTo cookie and redirect there
+                const returnTo = cookieStore.get('steam_return_to')?.value;
+                cookieStore.delete('steam_return_to'); // Clean up
+
+                if (returnTo) {
+                    // Validate returnTo is a relative URL or same origin (security)
+                    const cleanUrl = returnTo.startsWith('/') ? `${protocol}://${host}${returnTo}` : returnTo;
+                    if (cleanUrl.startsWith(`${protocol}://${host}`)) {
+                        resolve(NextResponse.redirect(cleanUrl));
+                        return;
+                    }
+                }
+
                 resolve(NextResponse.redirect(`${protocol}://${host}/?success=logged_in`));
             } catch (err) {
                 console.error('Session Creation Error:', err);

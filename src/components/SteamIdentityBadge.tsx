@@ -48,7 +48,8 @@ export default function SteamIdentityBadge() {
 
   const handleSwitch = () => {
     // Redirect to Steam login to get a new session
-    window.location.href = `/api/auth/steam/login?address=${address}`;
+    const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `/api/auth/steam/login?address=${address}&returnTo=${returnTo}`;
   };
 
   return (
