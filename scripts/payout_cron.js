@@ -51,6 +51,18 @@ async function verifyDeposits(supabase, provider) {
     if (error || !matches || matches.length === 0) return;
 
     for (const match of matches) {
+        // CRITICAL: Re-fetch status to prevent race condition with cancellation
+        const { data: freshMatch } = await supabase
+            .from('matches')
+            .select('status')
+            .eq('id', match.id)
+            .single();
+
+        if (!freshMatch || freshMatch.status !== 'DEPOSITING') {
+            // Match was cancelled or changed, skip it
+            continue;
+        }
+
         // Verify P1 deposit
         if (match.p1_tx_hash && !match.p1_deposited) {
             const verified = await verifyTransaction(provider, match.p1_tx_hash);
@@ -249,13 +261,19 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
             console.log(`   Refund TX: ${tx.hash}`);
             await tx.wait();
             console.log(`   Refund confirmed.`);
-        }
 
-        // Update payout status to REFUNDED
-        await supabase
-            .from('matches')
-            .update({ payout_status: 'REFUNDED' })
-            .eq('id', match.id);
+            // Save refund tx hash for UI display
+            await supabase
+                .from('matches')
+                .update({ payout_status: 'REFUNDED', refund_tx_hash: tx.hash })
+                .eq('id', match.id);
+        } else {
+            // No funds to refund, just mark as cancelled
+            await supabase
+                .from('matches')
+                .update({ payout_status: 'REFUNDED' })
+                .eq('id', match.id);
+        }
 
     } catch (e) {
         console.error(`   Refund error for ${match.contract_match_id}:`, e.message);
