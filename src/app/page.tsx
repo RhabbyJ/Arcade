@@ -256,6 +256,31 @@ function ArcadeInterface() {
         }
     }, [matchData?.status, matchData?.id]);
 
+  // Auto-start deposit phase when BOTH players are ready
+  useEffect(() => {
+      if (!matchData || !address) return;
+      
+      const isHost = matchData.player1_address?.toLowerCase() === address.toLowerCase();
+      const bothReady = matchData.p1_ready && matchData.p2_ready;
+      const notDepositing = matchData.status !== 'DEPOSITING';
+      
+      // Only host triggers the transition, and only if both ready and not already depositing
+      if (isHost && bothReady && notDepositing && matchData.status === 'LOBBY') {
+          console.log('🚀 Both ready! Auto-starting deposit phase...');
+          const startDeposit = async () => {
+              const now = new Date().toISOString();
+              await supabase
+                  .from('matches')
+                  .update({ 
+                      status: 'DEPOSITING',
+                      deposit_started_at: now
+                  })
+                  .eq('id', matchData.id);
+          };
+          startDeposit();
+      }
+  }, [matchData?.p1_ready, matchData?.p2_ready, matchData?.status, matchData?.id, address]);
+
 
   // 3. ACTIONS
   const handleSteamLink = () => {
@@ -787,17 +812,10 @@ function ArcadeInterface() {
                                       <p className="text-green-400 font-bold mb-1">✅ You are READY</p>
                                       <p className="text-xs text-gray-400 animate-pulse">Waiting for opponent...</p>
                                   </div>
-                              ) : isHost ? (
-                                  <button 
-                                      onClick={startDepositPhase}
-                                      className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-lg w-full shadow-lg shadow-blue-900/20 text-lg"
-                                  >
-                                      🚀 START DEPOSIT PHASE
-                                  </button>
                               ) : (
-                                  <div className="text-center p-4 bg-blue-900/20 border border-blue-500/50 rounded-lg">
-                                      <p className="text-blue-400 font-bold">Both Ready!</p>
-                                      <p className="text-xs text-gray-400 animate-pulse">Waiting for Host to start deposits...</p>
+                                  <div className="text-center p-4 bg-blue-900/30 border border-blue-500 rounded-lg animate-pulse">
+                                      <p className="text-blue-400 font-bold text-lg">🚀 BOTH READY!</p>
+                                      <p className="text-xs text-gray-400">Starting deposit phase...</p>
                                   </div>
                               )}
                               
@@ -812,9 +830,15 @@ function ArcadeInterface() {
                       ) : (
                           // DEPOSIT FORM
                            <div className="w-full max-w-md flex flex-col gap-4">
-                               {(isHost && p1Ready) || (!isHost && p2Ready) ? (
+                               {/* Deposit Timer */}
+                               <div className="bg-yellow-900/20 border border-yellow-600/50 p-3 rounded-lg">
+                                   <DepositTimer startedAt={matchData.deposit_started_at} />
+                               </div>
+
+                               {/* Check if current user has already submitted deposit */}
+                               {(isHost && matchData.p1_tx_hash) || (!isHost && matchData.p2_tx_hash) ? (
                                    <div className="text-center p-4 bg-green-900/20 border border-green-500/50 rounded-lg">
-                                       <p className="text-green-400 font-bold mb-1">YOU ARE READY</p>
+                                       <p className="text-green-400 font-bold mb-1">✅ DEPOSIT SUBMITTED</p>
                                        <p className="text-xs text-gray-400">Waiting for opponent to deposit...</p>
                                    </div>
                                ) : (
@@ -839,9 +863,9 @@ function ArcadeInterface() {
                                        <button 
                                            onClick={handleDeposit}
                                            disabled={isProcessing || !steamData}
-                                           className="bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold py-4 px-6 rounded-xl w-full shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-all"
+                                           className="bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-black font-bold py-4 px-6 rounded-xl w-full shadow-[0_0_15px_rgba(34,197,94,0.4)] transition-all animate-pulse"
                                        >
-                                           {isProcessing ? "PROCESSING..." : "DEPOSIT 5 USDC"}
+                                           {isProcessing ? "PROCESSING..." : "💰 DEPOSIT 5 USDC"}
                                        </button>
                                    </>
                                )}
