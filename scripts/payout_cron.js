@@ -150,20 +150,35 @@ async function assignServers(supabase) {
             })
             .eq('id', server.id);
 
-        // Reset server via RCON
+        // Reset server via RCON and load 1v1 config
         if (DATHOST_USER && DATHOST_PASS) {
             const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
-            try {
+
+            // Helper to send RCON command
+            const sendRcon = async (command) => {
                 await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Basic ${auth}`,
                         'Content-Type': 'application/x-www-form-urlencoded'
                     },
-                    body: new URLSearchParams({ line: 'css_endmatch; mp_restartgame 1' })
+                    body: new URLSearchParams({ line: command })
                 });
+            };
+
+            try {
+                // Step 1: End any existing MatchZy match
+                await sendRcon('css_endmatch');
+
+                // Step 2: Load the streamlined 1v1 config
+                await sendRcon('exec 1v1.cfg');
+
+                // Step 3: Start warmup (players will be waiting)
+                await sendRcon('mp_warmup_start 1');
+
+                console.log(`   ⚙️ Server ${server.name} configured with 1v1.cfg`);
             } catch (e) {
-                console.error("RCON reset error:", e.message);
+                console.error("RCON setup error:", e.message);
             }
         }
 
