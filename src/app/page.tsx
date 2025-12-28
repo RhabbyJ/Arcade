@@ -346,6 +346,26 @@ function ArcadeInterface() {
       }
   };
 
+  // Ready Check - player confirms they're ready before deposit phase
+  const handleReady = async () => {
+      if (!address || !matchData) return;
+      
+      const isHost = matchData.player1_address?.toLowerCase() === address.toLowerCase();
+      const readyField = isHost ? 'p1_ready' : 'p2_ready';
+      
+      console.log(`🎮 Setting ${readyField} to true`);
+      const { error } = await supabase
+          .from('matches')
+          .update({ [readyField]: true })
+          .eq('id', matchData.id);
+      
+      if (error) {
+          console.error("❌ Failed to set ready:", error);
+      } else {
+          addLog("You are READY!");
+      }
+  };
+
   const handleDeposit = async () => {
       if (!steamData) return alert("Link Steam Account First!");
       setIsProcessing(true);
@@ -491,9 +511,12 @@ function ArcadeInterface() {
       
       // UNIFIED LOBBY & DEPOSIT VIEW
       if (['LOBBY', 'PENDING', 'DEPOSITING'].includes(matchData.status)) {
-          const p1Ready = !!matchData.player1_steam;
-          const p2Ready = !!matchData.player2_steam;
+          // Ready Check: Use database flags for ready status
+          const p1Ready = !!matchData.p1_ready;
+          const p2Ready = !!matchData.p2_ready;
+          const bothReady = p1Ready && p2Ready;
           const isDepositing = matchData.status === 'DEPOSITING';
+          const myReady = isHost ? p1Ready : p2Ready;
           
           // CONFLICT DETECTION
           const isWrongMatch = inviteMatchId && String(matchData.contract_match_id) !== String(inviteMatchId);
@@ -620,16 +643,50 @@ function ArcadeInterface() {
                             )}
                         </div>
                       ) : !isDepositing ? (
-                          isHost ? (
-                              <button 
-                                  onClick={startDepositPhase}
-                                  className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg w-full max-w-md shadow-lg shadow-blue-900/20"
-                              >
-                                  START DEPOSIT PHASE
-                              </button>
-                          ) : (
-                              <p className="text-blue-400 animate-pulse font-bold">Waiting for Host to start...</p>
-                          )
+                          // READY CHECK PHASE (before deposit)
+                          <div className="w-full max-w-md flex flex-col gap-4">
+                              {/* Ready Status Display */}
+                              <div className="bg-gray-800/50 border border-gray-700 p-4 rounded-lg">
+                                  <p className="text-xs text-gray-400 mb-2 text-center uppercase tracking-wider">Ready Check</p>
+                                  <div className="flex justify-around">
+                                      <div className={`text-center ${p1Ready ? 'text-green-400' : 'text-gray-500'}`}>
+                                          <span className="text-xl">{p1Ready ? '✅' : '⏳'}</span>
+                                          <p className="text-xs mt-1">Player 1</p>
+                                      </div>
+                                      <div className={`text-center ${p2Ready ? 'text-green-400' : 'text-gray-500'}`}>
+                                          <span className="text-xl">{p2Ready ? '✅' : '⏳'}</span>
+                                          <p className="text-xs mt-1">Player 2</p>
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {/* Ready Button or Start Button */}
+                              {!myReady ? (
+                                  <button 
+                                      onClick={handleReady}
+                                      className="bg-green-600 hover:bg-green-500 text-white font-bold py-4 px-8 rounded-lg w-full shadow-lg shadow-green-900/20 text-lg animate-pulse"
+                                  >
+                                      I'M READY
+                                  </button>
+                              ) : !bothReady ? (
+                                  <div className="text-center p-4 bg-gray-800/50 border border-gray-600 rounded-lg">
+                                      <p className="text-green-400 font-bold mb-1">✅ You are READY</p>
+                                      <p className="text-xs text-gray-400 animate-pulse">Waiting for opponent...</p>
+                                  </div>
+                              ) : isHost ? (
+                                  <button 
+                                      onClick={startDepositPhase}
+                                      className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-lg w-full shadow-lg shadow-blue-900/20 text-lg"
+                                  >
+                                      🚀 START DEPOSIT PHASE
+                                  </button>
+                              ) : (
+                                  <div className="text-center p-4 bg-blue-900/20 border border-blue-500/50 rounded-lg">
+                                      <p className="text-blue-400 font-bold">Both Ready!</p>
+                                      <p className="text-xs text-gray-400 animate-pulse">Waiting for Host to start deposits...</p>
+                                  </div>
+                              )}
+                          </div>
                       ) : (
                           // DEPOSIT FORM
                            <div className="w-full max-w-md flex flex-col gap-4">
