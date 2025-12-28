@@ -192,13 +192,15 @@ async function assignServers(supabase) {
 async function checkTimeouts(supabase, escrow) {
     const now = Date.now();
     const LOBBY_TIMEOUT_MS = 15 * 60 * 1000;    // 15 minutes
+    const READY_TIMEOUT_MS = 60 * 1000;         // 60 seconds for ready check
     const DEPOSIT_TIMEOUT_MS = 30 * 1000;       // 30 seconds for testing (change to 10 * 60 * 1000 for production)
 
-    // A. Check stale WAITING/LOBBY matches
+    // A. Check stale WAITING/LOBBY matches (no one joined)
     const { data: waitingMatches } = await supabase
         .from('matches')
         .select('*')
-        .in('status', ['WAITING', 'LOBBY']);
+        .in('status', ['WAITING', 'LOBBY'])
+        .is('ready_started_at', null); // No P2 yet
 
     if (waitingMatches) {
         for (const match of waitingMatches) {
@@ -206,6 +208,33 @@ async function checkTimeouts(supabase, escrow) {
             if (now - createdAt > LOBBY_TIMEOUT_MS) {
                 console.log(`⏰ TIMEOUT: Match ${match.contract_match_id} in LOBBY for >15min. Cancelling.`);
                 await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', match.id);
+            }
+        }
+    }
+
+    // B. Check stale READY CHECK (P2 joined but both didn't ready up in time)
+    const { data: readyCheckMatches } = await supabase
+        .from('matches')
+        .select('*')
+        .in('status', ['LOBBY', 'PENDING'])
+        .not('ready_started_at', 'is', null); // P2 joined, ready check started
+
+    if (readyCheckMatches) {
+        for (const match of readyCheckMatches) {
+            // Skip if both are ready
+            if (match.p1_ready && match.p2_ready) continue;
+
+            const readyStartedAt = new Date(match.ready_started_at).getTime();
+            if (now - readyStartedAt > READY_TIMEOUT_MS) {
+                console.log(`⏰ READY CHECK TIMEOUT: Match ${match.contract_match_id} - Players didn't ready up. Kicking P2.`);
+                // Kick P2, reset match to waiting state
+                await supabase.from('matches').update({
+                    player2_address: null,
+                    player2_steam: null,
+                    p1_ready: false,
+                    p2_ready: false,
+                    ready_started_at: null
+                }).eq('id', match.id);
             }
         }
     }

@@ -22,6 +22,50 @@ const DEBUG_ESCROW_ABI = [
   "function usdc() external view returns (address)"
 ];
 
+// Ready Check Countdown Timer (45 seconds)
+const READY_TIMEOUT_MS = 45 * 1000; // 45 seconds to ready up
+
+function ReadyTimer({ startedAt }: { startedAt: string | null }) {
+    const [timeLeft, setTimeLeft] = useState<number>(READY_TIMEOUT_MS);
+
+    useEffect(() => {
+        if (!startedAt) return;
+        
+        const calculateTimeLeft = () => {
+            const started = new Date(startedAt).getTime();
+            const deadline = started + READY_TIMEOUT_MS;
+            const remaining = Math.max(0, deadline - Date.now());
+            setTimeLeft(remaining);
+        };
+
+        calculateTimeLeft();
+        const interval = setInterval(calculateTimeLeft, 1000);
+        return () => clearInterval(interval);
+    }, [startedAt]);
+
+    const seconds = Math.floor(timeLeft / 1000);
+    const isUrgent = timeLeft < 15 * 1000; // Less than 15 seconds
+
+    if (!startedAt) return null;
+
+    if (timeLeft === 0) {
+        return (
+            <div className="text-center text-red-400 text-sm animate-pulse">
+                ⏰ READY CHECK EXPIRED
+            </div>
+        );
+    }
+
+    return (
+        <div className="text-center">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Ready within</p>
+            <p className={`font-mono text-2xl font-bold ${isUrgent ? 'text-red-400 animate-pulse' : 'text-yellow-400'}`}>
+                {seconds}s
+            </p>
+        </div>
+    );
+}
+
 // Deposit Countdown Timer Component
 const DEPOSIT_TIMEOUT_MS = 30 * 1000; // 30 seconds for testing (change to 10 * 60 * 1000 for production)
 
@@ -280,9 +324,15 @@ function ArcadeInterface() {
           return;
       }
 
+      // Set ready_started_at when P2 joins to start the 45s countdown
+      const joinTime = new Date().toISOString();
       const { data, error } = await supabase
         .from('matches')
-        .update({ player2_address: address })
+        .update({ 
+            player2_address: address,
+            player2_steam: steamData?.id || null,
+            ready_started_at: joinTime  // Start the Ready Check timer
+        })
         .eq('id', existingMatch.id)
         .select()
         .single();
@@ -291,9 +341,42 @@ function ArcadeInterface() {
           alert("Failed to join: " + error.message);
       } else {
           setMatchData(data);
-          addLog("Joined Lobby!");
+          addLog("Joined Lobby! Ready Check started.");
       }
       setIsProcessing(false);
+  };
+
+  // Leave Lobby - Host cancels, Guest leaves
+  const leaveLobby = async () => {
+      if (!matchData) return;
+      
+      const isHost = matchData.player1_address?.toLowerCase() === address?.toLowerCase();
+      
+      if (isHost) {
+          // Host leaving = cancel the match
+          if (!confirm("Cancel this match? Both players will be returned to lobby.")) return;
+          await supabase
+              .from('matches')
+              .update({ status: 'CANCELLED' })
+              .eq('id', matchData.id);
+          setMatchData(null);
+          addLog("Match cancelled.");
+      } else {
+          // Guest leaving = remove P2, reset ready states
+          if (!confirm("Leave this match?")) return;
+          await supabase
+              .from('matches')
+              .update({ 
+                  player2_address: null,
+                  player2_steam: null,
+                  p1_ready: false,
+                  p2_ready: false,
+                  ready_started_at: null
+              })
+              .eq('id', matchData.id);
+          setMatchData(null);
+          addLog("Left the lobby.");
+      }
   };
 
   // 4. REFUND (New Feature)
@@ -645,17 +728,48 @@ function ArcadeInterface() {
                       ) : !isDepositing ? (
                           // READY CHECK PHASE (before deposit)
                           <div className="w-full max-w-md flex flex-col gap-4">
+                              {/* Ready Check Timer */}
+                              {matchData.ready_started_at && (
+                                  <div className="bg-yellow-900/20 border border-yellow-600/50 p-3 rounded-lg">
+                                      <ReadyTimer startedAt={matchData.ready_started_at} />
+                                  </div>
+                              )}
+
+                              {/* Opponent Identity Card - "Know Your Opponent" */}
+                              <div className="bg-gray-800/80 border border-gray-600 p-4 rounded-xl">
+                                  <p className="text-xs text-gray-500 mb-3 text-center uppercase tracking-wider">Your Opponent</p>
+                                  <div className="flex items-center justify-center gap-4">
+                                      <div className="w-14 h-14 bg-gradient-to-br from-red-500 to-orange-600 rounded-full flex items-center justify-center text-2xl shadow-lg">
+                                          {isHost ? '🎮' : '👑'}
+                                      </div>
+                                      <div className="text-left">
+                                          <p className="font-bold text-white">
+                                              {isHost ? 'Player 2' : 'Player 1 (Host)'}
+                                          </p>
+                                          <p className="text-xs text-gray-400 font-mono">
+                                              {isHost 
+                                                  ? `${matchData.player2_address?.slice(0,6)}...${matchData.player2_address?.slice(-4)}`
+                                                  : `${matchData.player1_address?.slice(0,6)}...${matchData.player1_address?.slice(-4)}`
+                                              }
+                                          </p>
+                                          {((isHost && matchData.player2_steam) || (!isHost && matchData.player1_steam)) && (
+                                              <p className="text-xs text-blue-400 mt-1">Steam Verified ✓</p>
+                                          )}
+                                      </div>
+                                  </div>
+                              </div>
+
                               {/* Ready Status Display */}
                               <div className="bg-gray-800/50 border border-gray-700 p-4 rounded-lg">
                                   <p className="text-xs text-gray-400 mb-2 text-center uppercase tracking-wider">Ready Check</p>
                                   <div className="flex justify-around">
                                       <div className={`text-center ${p1Ready ? 'text-green-400' : 'text-gray-500'}`}>
-                                          <span className="text-xl">{p1Ready ? '✅' : '⏳'}</span>
-                                          <p className="text-xs mt-1">Player 1</p>
+                                          <span className="text-2xl">{p1Ready ? '✅' : '⏳'}</span>
+                                          <p className="text-xs mt-1 font-bold">{isHost ? 'YOU' : 'HOST'}</p>
                                       </div>
                                       <div className={`text-center ${p2Ready ? 'text-green-400' : 'text-gray-500'}`}>
-                                          <span className="text-xl">{p2Ready ? '✅' : '⏳'}</span>
-                                          <p className="text-xs mt-1">Player 2</p>
+                                          <span className="text-2xl">{p2Ready ? '✅' : '⏳'}</span>
+                                          <p className="text-xs mt-1 font-bold">{!isHost ? 'YOU' : 'OPPONENT'}</p>
                                       </div>
                                   </div>
                               </div>
@@ -686,6 +800,14 @@ function ArcadeInterface() {
                                       <p className="text-xs text-gray-400 animate-pulse">Waiting for Host to start deposits...</p>
                                   </div>
                               )}
+                              
+                              {/* Leave Lobby Button */}
+                              <button
+                                  onClick={leaveLobby}
+                                  className="text-xs text-gray-500 hover:text-red-400 underline transition-colors"
+                              >
+                                  {isHost ? '🚪 Cancel Match' : '🚪 Leave Lobby'}
+                              </button>
                           </div>
                       ) : (
                           // DEPOSIT FORM
