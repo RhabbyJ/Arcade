@@ -154,6 +154,9 @@ async function assignServers(supabase) {
         if (DATHOST_USER && DATHOST_PASS) {
             const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
+            // Workshop map ID for 1v1 arena
+            const WORKSHOP_MAP_ID = '3344743064';
+
             // Helper to send RCON command
             const sendRcon = async (command) => {
                 await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
@@ -167,16 +170,18 @@ async function assignServers(supabase) {
             };
 
             try {
-                // Step 1: End any existing MatchZy match
+                // Step 1: End any existing MatchZy match (clears old state)
+                await sendRcon('get5_endmatch');
                 await sendRcon('css_endmatch');
 
-                // Step 2: Load the streamlined 1v1 config
+                // Step 2: Load the workshop map (this is critical for custom maps)
+                await sendRcon(`host_workshop_map ${WORKSHOP_MAP_ID}`);
+
+                // Step 3: Wait a moment for map to load, then execute our config
+                // Note: The config silences MatchZy and sets up auto-start on 2 players
                 await sendRcon('exec 1v1.cfg');
 
-                // Step 3: Start warmup (players will be waiting)
-                await sendRcon('mp_warmup_start 1');
-
-                console.log(`   ⚙️ Server ${server.name} configured with 1v1.cfg`);
+                console.log(`   ⚙️ Server ${server.name} configured with workshop map + 1v1.cfg`);
             } catch (e) {
                 console.error("RCON setup error:", e.message);
             }
