@@ -219,7 +219,7 @@ async function checkAutoStart(supabase) {
     // Find LIVE matches that haven't been force-started yet
     const { data: liveMatches } = await supabase
         .from('matches')
-        .select('*, game_servers!inner(dathost_id, name)')
+        .select('*')
         .eq('status', 'LIVE')
         .is('match_started_at', null); // Not yet actually started
 
@@ -229,7 +229,13 @@ async function checkAutoStart(supabase) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
     for (const match of liveMatches) {
-        const server = match.game_servers;
+        // Get server via reverse lookup (game_servers.current_match_id points to matches.id)
+        const { data: server } = await supabase
+            .from('game_servers')
+            .select('dathost_id, name')
+            .eq('current_match_id', match.id)
+            .single();
+
         if (!server || !server.dathost_id) continue;
 
         try {
