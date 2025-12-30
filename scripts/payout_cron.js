@@ -266,7 +266,7 @@ async function checkAutoStart(supabase) {
                                 'Authorization': `Basic ${auth}`,
                                 'Content-Type': 'application/x-www-form-urlencoded'
                             },
-                            body: new URLSearchParams({ line: 'css_forceready' })
+                            body: new URLSearchParams({ line: 'matchzy_forceready' })
                         });
 
                         // Mark match as actually started
