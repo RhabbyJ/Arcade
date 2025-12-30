@@ -207,6 +207,85 @@ async function assignServers(supabase) {
 }
 
 // ---------------------------------------------------------
+// 2B. AUTO-START MATCHES (Check for 2 players, forceready after 30s)
+// ---------------------------------------------------------
+// Track which matches have pending forceready (matchId -> timestamp when 2 players detected)
+const pendingForceReady = new Map();
+const WARMUP_DELAY_MS = 30 * 1000; // 30 second warmup
+
+async function checkAutoStart(supabase) {
+    const now = Date.now();
+
+    // Find LIVE matches that haven't been force-started yet
+    const { data: liveMatches } = await supabase
+        .from('matches')
+        .select('*, game_servers!inner(dathost_id, name)')
+        .eq('status', 'LIVE')
+        .is('match_started_at', null); // Not yet actually started
+
+    if (!liveMatches || liveMatches.length === 0) return;
+
+    if (!DATHOST_USER || !DATHOST_PASS) return;
+    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+
+    for (const match of liveMatches) {
+        const server = match.game_servers;
+        if (!server || !server.dathost_id) continue;
+
+        try {
+            // Check player count via DatHost API
+            const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                headers: { 'Authorization': `Basic ${auth}` }
+            });
+            const serverInfo = await statusRes.json();
+            const playerCount = serverInfo.players_online || 0;
+
+            // If 2+ players detected
+            if (playerCount >= 2) {
+                if (!pendingForceReady.has(match.id)) {
+                    // First time detecting 2 players - start countdown
+                    console.log(`   👥 2 players detected on ${server.name} for match ${match.contract_match_id}`);
+                    console.log(`   ⏱️ Starting 30-second warmup countdown...`);
+                    pendingForceReady.set(match.id, now);
+                } else {
+                    // Check if 30 seconds have passed
+                    const detectedAt = pendingForceReady.get(match.id);
+                    if (now - detectedAt >= WARMUP_DELAY_MS) {
+                        console.log(`   🚀 30s warmup complete! Sending forceready for match ${match.contract_match_id}`);
+
+                        // Send forceready via RCON
+                        await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Basic ${auth}`,
+                                'Content-Type': 'application/x-www-form-urlencoded'
+                            },
+                            body: new URLSearchParams({ line: 'css_forceready' })
+                        });
+
+                        // Mark match as actually started
+                        await supabase.from('matches').update({
+                            match_started_at: new Date().toISOString()
+                        }).eq('id', match.id);
+
+                        pendingForceReady.delete(match.id);
+                        console.log(`   ✅ Match ${match.contract_match_id} is now LIVE and playing!`);
+                    }
+                }
+            } else {
+                // Less than 2 players - reset countdown if it was started
+                if (pendingForceReady.has(match.id)) {
+                    console.log(`   ⚠️ Player left, resetting warmup countdown for match ${match.contract_match_id}`);
+                    pendingForceReady.delete(match.id);
+                }
+            }
+        } catch (e) {
+            console.error(`Error checking auto-start for match ${match.contract_match_id}:`, e.message);
+        }
+    }
+}
+
+// ---------------------------------------------------------
 // 3. CHECK TIMEOUTS (NEW - Auto-cancel stale matches)
 // ---------------------------------------------------------
 async function checkTimeouts(supabase, escrow) {
@@ -475,6 +554,9 @@ async function run() {
 
         // NEW: Assign servers when both players paid
         await assignServers(supabase);
+
+        // NEW: Auto-start matches when 2 players join (30s warmup)
+        await checkAutoStart(supabase);
 
         // NEW: Cancel stale matches
         await checkTimeouts(supabase, escrow);
