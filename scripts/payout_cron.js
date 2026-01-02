@@ -282,11 +282,11 @@ async function assignServers(supabase) {
 }
 
 // ---------------------------------------------------------
-// 2B. AUTO-START MATCHES (Check for 2 players, forceready after 30s)
+// 2B. AUTO-START MATCHES (Check for 2 players, forceready after 60s)
 // ---------------------------------------------------------
 // Track which matches have pending forceready (matchId -> timestamp when 2 players detected)
 const pendingForceReady = new Map();
-const WARMUP_DELAY_MS = 30 * 1000; // 30 second warmup
+const WARMUP_DELAY_MS = 60 * 1000; // 60 second warmup - players can .ready to skip
 
 async function checkAutoStart(supabase) {
     const now = Date.now();
@@ -329,11 +329,11 @@ async function checkAutoStart(supabase) {
         }
 
         try {
-            // Try UDP query first (instant), fall back to DatHost API if it fails
-            let playerCount = await queryPlayerCount(server.ip, server.port);
+            // SKIP UDP - VPS blocks it and it hangs forever
+            // Use DatHost API directly (slower but reliable)
+            let playerCount = 0;
 
-            // If UDP returned 0, try DatHost API as fallback (slower but reliable)
-            if (playerCount === 0 && server.dathost_id) {
+            if (server.dathost_id) {
                 try {
                     const apiRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
                         headers: { 'Authorization': `Basic ${auth}` }
@@ -341,10 +341,10 @@ async function checkAutoStart(supabase) {
                     if (apiRes.ok) {
                         const data = await apiRes.json();
                         playerCount = data.players_online || 0;
-                        console.log(`   [Debug] API fallback: ${playerCount} players`);
+                        console.log(`   [Debug] DatHost API: ${playerCount} players on ${server.name}`);
                     }
                 } catch (e) {
-                    // Ignore API errors
+                    console.log(`   [Debug] API error: ${e.message}`);
                 }
             }
 
