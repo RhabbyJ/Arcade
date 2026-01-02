@@ -49,10 +49,8 @@ async function queryPlayerCount(host, port) {
         // Resolve hostname to IP if needed
         let ip = host;
         if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-            // It's a hostname, resolve it
             const result = await dns.lookup(host);
             ip = result.address;
-            console.log(`   [Debug] Resolved ${host} -> ${ip}`);
         }
 
         return new Promise((resolve) => {
@@ -66,7 +64,6 @@ async function queryPlayerCount(host, port) {
             // Timeout if server doesn't respond in 2s
             const timeout = setTimeout(() => {
                 socket.close();
-                console.log(`   [Debug] Query timeout for ${ip}:${port}`);
                 resolve(0); // Assume 0 on error
             }, 2000);
 
@@ -88,10 +85,8 @@ async function queryPlayerCount(host, port) {
                     const players = msg[offset]; // This byte is player count
 
                     socket.close();
-                    console.log(`   [Debug] Query success: ${players} players`);
                     resolve(players || 0);
                 } catch (e) {
-                    console.log(`   [Debug] Parse error: ${e.message}`);
                     socket.close();
                     resolve(0);
                 }
@@ -99,7 +94,6 @@ async function queryPlayerCount(host, port) {
 
             socket.send(packet, 0, packet.length, port, ip, (err) => {
                 if (err) {
-                    console.log(`   [Debug] Socket send error: ${err.message}`);
                     clearTimeout(timeout);
                     socket.close();
                     resolve(0);
@@ -107,7 +101,7 @@ async function queryPlayerCount(host, port) {
             });
         });
     } catch (e) {
-        console.error(`   DNS/Query error for ${host}: ${e.message}`);
+        // Console log removed to reduce spam
         return 0;
     }
 }
@@ -134,7 +128,6 @@ async function verifyDeposits(supabase, provider) {
             .single();
 
         if (!freshMatch || freshMatch.status !== 'DEPOSITING') {
-            // Match was cancelled or changed, skip it
             continue;
         }
 
@@ -162,7 +155,6 @@ async function verifyTransaction(provider, txHash) {
     try {
         const receipt = await provider.getTransactionReceipt(txHash);
         if (receipt && receipt.status === 1) {
-            // Transaction was successful
             return true;
         }
         return false;
@@ -176,7 +168,6 @@ async function verifyTransaction(provider, txHash) {
 // 2. ASSIGN SERVERS (NEW - After Both Deposits)
 // ---------------------------------------------------------
 async function assignServers(supabase) {
-    // Find matches where both deposited but no server assigned
     const { data: matches, error } = await supabase
         .from('matches')
         .select('*')
@@ -188,7 +179,6 @@ async function assignServers(supabase) {
     if (error || !matches || matches.length === 0) return;
 
     for (const match of matches) {
-        // RACE CONDITION GUARD: Re-fetch to ensure match wasn't already processed
         const { data: freshMatch } = await supabase
             .from('matches')
             .select('status, server_id')
@@ -196,7 +186,6 @@ async function assignServers(supabase) {
             .single();
 
         if (!freshMatch || freshMatch.status !== 'DEPOSITING' || freshMatch.server_id) {
-            // Already processed by another cycle, skip
             continue;
         }
 
@@ -225,14 +214,10 @@ async function assignServers(supabase) {
             })
             .eq('id', server.id);
 
-        // Reset server via RCON and load 1v1 config
         if (DATHOST_USER && DATHOST_PASS) {
             const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
-
-            // Workshop map ID for 1v1 arena
             const WORKSHOP_MAP_ID = '3344743064';
 
-            // Helper to send RCON command
             const sendRcon = async (command) => {
                 await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
                     method: 'POST',
@@ -245,15 +230,9 @@ async function assignServers(supabase) {
             };
 
             try {
-                // Step 1: End any existing MatchZy match (clears old state)
                 await sendRcon('get5_endmatch');
                 await sendRcon('css_endmatch');
-
-                // Step 2: Load the workshop map (this is critical for custom maps)
                 await sendRcon(`host_workshop_map ${WORKSHOP_MAP_ID}`);
-
-                // Step 3: Wait a moment for map to load, then execute our config
-                // Note: The config silences MatchZy and sets up auto-start on 2 players
                 await sendRcon('exec 1v1.cfg');
 
                 console.log(`   ⚙️ Server ${server.name} configured with workshop map + 1v1.cfg`);
@@ -262,13 +241,11 @@ async function assignServers(supabase) {
             }
         }
 
-        // Update match to LIVE (server is tracked via game_servers.current_match_id)
+        // Update match to LIVE
         const { error: liveError } = await supabase
             .from('matches')
             .update({
                 status: 'LIVE',
-                // Note: server_id removed due to UUID/int type mismatch
-                // Server assignment is tracked via game_servers.current_match_id instead
                 server_assigned_at: new Date().toISOString()
             })
             .eq('id', match.id);
@@ -284,30 +261,25 @@ async function assignServers(supabase) {
 // ---------------------------------------------------------
 // 2B. AUTO-START MATCHES (Check for 2 players, forceready after 60s)
 // ---------------------------------------------------------
-// Track which matches have pending forceready (matchId -> timestamp when 2 players detected)
 const pendingForceReady = new Map();
-const WARMUP_DELAY_MS = 60 * 1000; // 60 second warmup - players can .ready to skip
+const WARMUP_DELAY_MS = 60 * 1000; // 60 second warmup
+const MINIMUM_WAIT_AFTER_LIVE = 30 * 1000; // 30 seconds wait for map load
 
 async function checkAutoStart(supabase) {
     const now = Date.now();
 
-    // Find LIVE matches that haven't been force-started yet
     const { data: liveMatches, error: matchError } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'LIVE')
-        .is('match_started_at', null); // Not yet actually started
+        .is('match_started_at', null);
 
     if (matchError) {
         console.log(`   ⚠️ [AutoStart] Query error: ${matchError.message}`);
         return;
     }
 
-    if (!liveMatches || liveMatches.length === 0) {
-        return;
-    }
-
-    console.log(`   🔍 [AutoStart] Found ${liveMatches.length} LIVE match(es) pending autostart`);
+    if (!liveMatches || liveMatches.length === 0) return;
 
     if (!DATHOST_USER || !DATHOST_PASS) {
         console.log(`   ⚠️ [AutoStart] DatHost credentials not configured`);
@@ -316,7 +288,17 @@ async function checkAutoStart(supabase) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
     for (const match of liveMatches) {
-        // Get server via reverse lookup (game_servers.current_match_id points to matches.id)
+        // --- FIX 2: PREVENT STALE DATA ON MAP CHANGE ---
+        // Ensure the match has been LIVE for at least 30 seconds before checking players.
+        // This gives DatHost time to clear the "2 players" from the previous session.
+        if (match.server_assigned_at) {
+            const assignedAt = new Date(match.server_assigned_at).getTime();
+            if (now - assignedAt < MINIMUM_WAIT_AFTER_LIVE) {
+                // console.log(`   ⏳ Match ${match.contract_match_id} loading map... (${Math.round((MINIMUM_WAIT_AFTER_LIVE - (now - assignedAt))/1000)}s left)`);
+                continue;
+            }
+        }
+
         const { data: server, error: serverError } = await supabase
             .from('game_servers')
             .select('dathost_id, name, ip, port')
@@ -329,57 +311,70 @@ async function checkAutoStart(supabase) {
         }
 
         try {
-            // SKIP UDP - VPS blocks it and it hangs forever
-            // Use DatHost API directly (slower but reliable)
-            let playerCount = 0;
+            // UDP with API Fallback
+            let playerCount = await queryPlayerCount(server.ip, server.port);
 
-            if (server.dathost_id) {
-                try {
-                    const apiRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
-                        headers: { 'Authorization': `Basic ${auth}` }
-                    });
-                    if (apiRes.ok) {
-                        const data = await apiRes.json();
-                        playerCount = data.players_online || 0;
-                        console.log(`   [Debug] DatHost API: ${playerCount} players on ${server.name}`);
-                    }
-                } catch (e) {
-                    console.log(`   [Debug] API error: ${e.message}`);
-                }
+            if (playerCount === 0) {
+                const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                    headers: { 'Authorization': `Basic ${auth}` }
+                });
+                const serverInfo = await statusRes.json();
+                playerCount = serverInfo.players_online || 0;
             }
+
+            // Helper for RCON
+            const sendRcon = async (cmd) => {
+                await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ line: cmd })
+                });
+            };
 
             // If 2+ players detected
             if (playerCount >= 2) {
                 if (!pendingForceReady.has(match.id)) {
-                    // First time detecting 2 players - start countdown
+                    // --- INITIAL DETECT ---
                     console.log(`   👥 2 players detected on ${server.name} for match ${match.contract_match_id}`);
                     console.log(`   ⏱️ Starting 60-second warmup countdown...`);
-                    pendingForceReady.set(match.id, now);
 
-                    // Announce via RCON
-                    await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: new URLSearchParams({ line: 'say "Both players connected! Type .ready or match auto-starts in 60 seconds!"' })
+                    pendingForceReady.set(match.id, {
+                        start: now,
+                        alerted30: false,
+                        alerted10: false
                     });
 
+                    await sendRcon('say "Both players connected! Match auto-starts in 60 seconds (or type .ready)!"');
+
                 } else {
-                    // Check if 30 seconds have passed
-                    const detectedAt = pendingForceReady.get(match.id);
-                    if (now - detectedAt >= WARMUP_DELAY_MS) {
-                        console.log(`   🚀 60s warmup complete! Sending forceready for match ${match.contract_match_id}`);
+                    // --- COUNTDOWN LOGIC ---
+                    const state = pendingForceReady.get(match.id);
+                    const elapsed = now - state.start;
+                    const remaining = WARMUP_DELAY_MS - elapsed;
 
-                        // Send forceready via RCON
-                        await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Basic ${auth}`,
-                                'Content-Type': 'application/x-www-form-urlencoded'
-                            },
-                            body: new URLSearchParams({ line: 'matchzy_forceready' })
-                        });
+                    // 30 Seconds Remaining Check
+                    if (remaining <= 30000 && remaining > 25000 && !state.alerted30) {
+                        state.alerted30 = true;
+                        pendingForceReady.set(match.id, state);
+                        await sendRcon('say "Match starting in 30 seconds..."');
+                        console.log(`   📢 30s alert sent for ${match.contract_match_id}`);
+                    }
 
-                        // Mark match as actually started
+                    // 10 Seconds Remaining Check
+                    if (remaining <= 10000 && remaining > 5000 && !state.alerted10) {
+                        state.alerted10 = true;
+                        pendingForceReady.set(match.id, state);
+                        await sendRcon('say "Match starting in 10 seconds!"');
+                        console.log(`   📢 10s alert sent for ${match.contract_match_id}`);
+                    }
+
+                    // --- TIME UP: FORCE START ---
+                    if (elapsed >= WARMUP_DELAY_MS) {
+                        console.log(`   🚀 60s warmup complete! Sending css_start for match ${match.contract_match_id}`);
+
+                        // --- FIX 1: CORRECT COMMAND ---
+                        await sendRcon('css_start'); // MatchZy .start command
+
                         await supabase.from('matches').update({
                             match_started_at: new Date().toISOString()
                         }).eq('id', match.id);
@@ -389,7 +384,7 @@ async function checkAutoStart(supabase) {
                     }
                 }
             } else {
-                // Less than 2 players - reset countdown if it was started
+                // Less than 2 players - reset countdown
                 if (pendingForceReady.has(match.id)) {
                     console.log(`   ⚠️ Player left, resetting warmup countdown for match ${match.contract_match_id}`);
                     pendingForceReady.delete(match.id);
@@ -408,14 +403,14 @@ async function checkTimeouts(supabase, escrow) {
     const now = Date.now();
     const LOBBY_TIMEOUT_MS = 15 * 60 * 1000;    // 15 minutes
     const READY_TIMEOUT_MS = 60 * 1000;         // 60 seconds for ready check
-    const DEPOSIT_TIMEOUT_MS = 30 * 1000;       // 30 seconds for testing (change to 10 * 60 * 1000 for production)
+    const DEPOSIT_TIMEOUT_MS = 30 * 1000;       // 30 seconds for testing
 
     // A. Check stale WAITING/LOBBY matches (no one joined)
     const { data: waitingMatches } = await supabase
         .from('matches')
         .select('*')
         .in('status', ['WAITING', 'LOBBY'])
-        .is('ready_started_at', null); // No P2 yet
+        .is('ready_started_at', null);
 
     if (waitingMatches) {
         for (const match of waitingMatches) {
@@ -427,22 +422,19 @@ async function checkTimeouts(supabase, escrow) {
         }
     }
 
-    // B. Check stale READY CHECK (P2 joined but both didn't ready up in time)
+    // B. Check stale READY CHECK
     const { data: readyCheckMatches } = await supabase
         .from('matches')
         .select('*')
         .in('status', ['LOBBY', 'PENDING'])
-        .not('ready_started_at', 'is', null); // P2 joined, ready check started
+        .not('ready_started_at', 'is', null);
 
     if (readyCheckMatches) {
         for (const match of readyCheckMatches) {
-            // Skip if both are ready
             if (match.p1_ready && match.p2_ready) continue;
-
             const readyStartedAt = new Date(match.ready_started_at).getTime();
             if (now - readyStartedAt > READY_TIMEOUT_MS) {
                 console.log(`⏰ READY CHECK TIMEOUT: Match ${match.contract_match_id} - Players didn't ready up. Kicking P2.`);
-                // Kick P2, reset match to waiting state
                 await supabase.from('matches').update({
                     player2_address: null,
                     player2_steam: null,
@@ -454,7 +446,7 @@ async function checkTimeouts(supabase, escrow) {
         }
     }
 
-    // C. Check stale DEPOSITING matches (only one player paid)
+    // C. Check stale DEPOSITING matches
     const { data: depositingMatches } = await supabase
         .from('matches')
         .select('*')
@@ -462,14 +454,12 @@ async function checkTimeouts(supabase, escrow) {
 
     if (depositingMatches) {
         for (const match of depositingMatches) {
-            // Use deposit_started_at if available, fallback to created_at for backwards compat
             const startTime = match.deposit_started_at || match.created_at;
             const startedAt = new Date(startTime).getTime();
             const isStale = now - startedAt > DEPOSIT_TIMEOUT_MS;
 
             if (!isStale) continue;
 
-            // Check if only one player deposited
             const onlyP1Paid = match.p1_deposited && !match.p2_deposited;
             const onlyP2Paid = match.p2_deposited && !match.p1_deposited;
 
@@ -480,7 +470,6 @@ async function checkTimeouts(supabase, escrow) {
                 console.log(`⏰ TIMEOUT: Match ${match.contract_match_id} - P1 ghosted. Refunding P2.`);
                 await refundPlayer(supabase, escrow, match, match.player2_address);
             } else if (!match.p1_deposited && !match.p2_deposited) {
-                // Neither paid, just cancel
                 console.log(`⏰ TIMEOUT: Match ${match.contract_match_id} - No deposits. Cancelling.`);
                 await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', match.id);
             }
@@ -490,22 +479,19 @@ async function checkTimeouts(supabase, escrow) {
 
 async function refundPlayer(supabase, escrow, match, playerAddress) {
     try {
-        // FIRST: Mark as CANCELLED immediately to prevent race conditions
         console.log(`   🔒 Setting match ${match.contract_match_id} to CANCELLED...`);
         const { error: cancelError } = await supabase
             .from('matches')
-            .update({ status: 'CANCELLED' })  // Only status, payout_status updated after refund
+            .update({ status: 'CANCELLED' })
             .eq('id', match.id);
 
         if (cancelError) {
             console.error(`   ❌ Failed to set CANCELLED:`, cancelError);
-            return; // Don't proceed if we can't cancel
+            return;
         }
         console.log(`   ✅ Match marked CANCELLED.`);
 
         const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-
-        // Check if there's actually money on-chain
         const contractMatch = await escrow.matches(matchIdBytes32);
         const pot = contractMatch[2];
 
@@ -515,13 +501,11 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
             await tx.wait();
             console.log(`   Refund confirmed.`);
 
-            // Save refund tx hash for UI display
             await supabase
                 .from('matches')
                 .update({ payout_status: 'REFUNDED', refund_tx_hash: tx.hash })
                 .eq('id', match.id);
         } else {
-            // No funds to refund, just mark as cancelled
             await supabase
                 .from('matches')
                 .update({ payout_status: 'REFUNDED' })
@@ -530,7 +514,6 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
 
     } catch (e) {
         console.error(`   Refund error for ${match.contract_match_id}:`, e.message);
-        // Still mark as cancelled even if refund fails
         await supabase
             .from('matches')
             .update({ status: 'CANCELLED', payout_status: 'REFUND_FAILED' })
@@ -539,10 +522,10 @@ async function refundPlayer(supabase, escrow, match, playerAddress) {
 }
 
 // ---------------------------------------------------------
-// 4. FORFEIT MONITOR (Existing - Rage Quit Detector)
+// 4. FORFEIT MONITOR
 // ---------------------------------------------------------
 async function checkForfeits(supabase) {
-    const { data: matches, error } = await supabase
+    const { data: matches } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'LIVE');
@@ -600,10 +583,7 @@ async function resetServer(supabase, matchId) {
         try {
             await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Basic ${auth}`,
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
+                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: new URLSearchParams({ line: cmd }).toString()
             });
         } catch (e) {
@@ -615,7 +595,7 @@ async function resetServer(supabase, matchId) {
 }
 
 // ---------------------------------------------------------
-// 5. PAYOUT PROCESSOR (Existing - Winner gets paid)
+// 5. PAYOUT PROCESSOR
 // ---------------------------------------------------------
 async function processPayouts(supabase, escrow) {
     const { data: matches } = await supabase
@@ -649,10 +629,9 @@ async function processPayouts(supabase, escrow) {
 }
 
 // ---------------------------------------------------------
-// MAIN LOOP - KEEP ALIVE
+// MAIN LOOP
 // ---------------------------------------------------------
 async function run() {
-    // Note: We access vars here to ensure they loaded
     if (!PRIVATE_KEY) {
         console.error("ERROR: PAYOUT_PRIVATE_KEY not found in .env");
         process.exit(1);
@@ -666,31 +645,16 @@ async function run() {
     console.log(`[${new Date().toISOString()}] Bot cycle starting...`);
 
     try {
-        // NEW: Verify deposits on-chain
         await verifyDeposits(supabase, provider);
-
-        // NEW: Assign servers when both players paid
         await assignServers(supabase);
-
-        // NEW: Auto-start matches when 2 players join (30s warmup)
-        await checkAutoStart(supabase);
-
-        // NEW: Cancel stale matches
+        await checkAutoStart(supabase); // <--- Updated with new logic
         await checkTimeouts(supabase, escrow);
-
-        // EXISTING: Check for forfeits (rage quits)
-        // await checkForfeits(supabase); // Uncomment if implemented
-
-        // EXISTING: Process payouts
+        // await checkForfeits(supabase); 
         await processPayouts(supabase, escrow);
-
     } catch (e) {
         console.error("Loop Error:", e);
     }
 }
 
-// Run immediately on start
 run();
-
-// Then run every 5 seconds to stay alive (prevents PM2 restart spam)
 setInterval(run, 5000);
