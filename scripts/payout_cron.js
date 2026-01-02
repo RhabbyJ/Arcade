@@ -2,7 +2,8 @@ const { createClient } = require('@supabase/supabase-js');
 const { ethers } = require('ethers');
 const path = require('path');
 const dotenv = require('dotenv');
-const dgram = require('dgram'); // NEW: For direct server queries
+const dgram = require('dgram'); // For direct server queries
+const dns = require('dns').promises; // For resolving hostnames to IPs
 
 // Load .env or .env.local from current dir
 const envLocalPath = path.resolve(__dirname, '.env.local');
@@ -41,58 +42,70 @@ function numericToBytes32(num) {
 // ---------------------------------------------------------
 // NEW: DIRECT SERVER QUERY (A2S_INFO)
 // Bypasses DatHost API lag to get instant player counts
+// Supports both hostnames and IP addresses
 // ---------------------------------------------------------
-function queryPlayerCount(ip, port) {
-    return new Promise((resolve) => {
-        const socket = dgram.createSocket('udp4');
-        const packet = Buffer.concat([
-            Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]), // Header
-            Buffer.from([0x54]),                   // T (A2S_INFO)
-            Buffer.from('Source Engine Query\0')   // Payload
-        ]);
+async function queryPlayerCount(host, port) {
+    try {
+        // Resolve hostname to IP if needed
+        let ip = host;
+        if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+            // It's a hostname, resolve it
+            const result = await dns.lookup(host);
+            ip = result.address;
+            // console.log(`   Resolved ${host} -> ${ip}`);
+        }
 
-        // Timeout if server doesn't respond in 2s
-        const timeout = setTimeout(() => {
-            socket.close();
-            resolve(0); // Assume 0 on error
-        }, 2000);
+        return new Promise((resolve) => {
+            const socket = dgram.createSocket('udp4');
+            const packet = Buffer.concat([
+                Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]), // Header
+                Buffer.from([0x54]),                   // T (A2S_INFO)
+                Buffer.from('Source Engine Query\0')   // Payload
+            ]);
 
-        socket.on('message', (msg) => {
-            clearTimeout(timeout);
-            try {
-                // Parse A2S_INFO response
-                // Byte 5 is Header (I), Byte 6 is Protocol
-                // Name starts at Byte 6 (variable length string)
-                // We skip Name, Map, Folder, Game strings to find Players
-                let offset = 6;
-                while (msg[offset] !== 0) offset++; // Skip Name
-                offset++;
-                while (msg[offset] !== 0) offset++; // Skip Map
-                offset++;
-                while (msg[offset] !== 0) offset++; // Skip Folder
-                offset++;
-                while (msg[offset] !== 0) offset++; // Skip Game
-                offset++;
-
-                offset += 2; // Skip ID
-                const players = msg[offset]; // This byte is player count
-
+            // Timeout if server doesn't respond in 2s
+            const timeout = setTimeout(() => {
                 socket.close();
-                resolve(players || 0);
-            } catch (e) {
-                socket.close();
-                resolve(0);
-            }
-        });
+                resolve(0); // Assume 0 on error
+            }, 2000);
 
-        socket.send(packet, 0, packet.length, port, ip, (err) => {
-            if (err) {
+            socket.on('message', (msg) => {
                 clearTimeout(timeout);
-                socket.close();
-                resolve(0);
-            }
+                try {
+                    // Parse A2S_INFO response
+                    let offset = 6;
+                    while (msg[offset] !== 0) offset++; // Skip Name
+                    offset++;
+                    while (msg[offset] !== 0) offset++; // Skip Map
+                    offset++;
+                    while (msg[offset] !== 0) offset++; // Skip Folder
+                    offset++;
+                    while (msg[offset] !== 0) offset++; // Skip Game
+                    offset++;
+
+                    offset += 2; // Skip ID
+                    const players = msg[offset]; // This byte is player count
+
+                    socket.close();
+                    resolve(players || 0);
+                } catch (e) {
+                    socket.close();
+                    resolve(0);
+                }
+            });
+
+            socket.send(packet, 0, packet.length, port, ip, (err) => {
+                if (err) {
+                    clearTimeout(timeout);
+                    socket.close();
+                    resolve(0);
+                }
+            });
         });
-    });
+    } catch (e) {
+        console.error(`   DNS/Query error for ${host}: ${e.message}`);
+        return 0;
+    }
 }
 
 // ---------------------------------------------------------
