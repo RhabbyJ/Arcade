@@ -52,7 +52,7 @@ async function queryPlayerCount(host, port) {
             // It's a hostname, resolve it
             const result = await dns.lookup(host);
             ip = result.address;
-            // console.log(`   Resolved ${host} -> ${ip}`);
+            console.log(`   [Debug] Resolved ${host} -> ${ip}`);
         }
 
         return new Promise((resolve) => {
@@ -66,6 +66,7 @@ async function queryPlayerCount(host, port) {
             // Timeout if server doesn't respond in 2s
             const timeout = setTimeout(() => {
                 socket.close();
+                console.log(`   [Debug] Query timeout for ${ip}:${port}`);
                 resolve(0); // Assume 0 on error
             }, 2000);
 
@@ -87,8 +88,10 @@ async function queryPlayerCount(host, port) {
                     const players = msg[offset]; // This byte is player count
 
                     socket.close();
+                    console.log(`   [Debug] Query success: ${players} players`);
                     resolve(players || 0);
                 } catch (e) {
+                    console.log(`   [Debug] Parse error: ${e.message}`);
                     socket.close();
                     resolve(0);
                 }
@@ -96,6 +99,7 @@ async function queryPlayerCount(host, port) {
 
             socket.send(packet, 0, packet.length, port, ip, (err) => {
                 if (err) {
+                    console.log(`   [Debug] Socket send error: ${err.message}`);
                     clearTimeout(timeout);
                     socket.close();
                     resolve(0);
