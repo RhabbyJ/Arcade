@@ -2,6 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { ethers } = require('ethers');
 const path = require('path');
 const dotenv = require('dotenv');
+const dgram = require('dgram'); // NEW: For direct server queries
 
 // Load .env or .env.local from current dir
 const envLocalPath = path.resolve(__dirname, '.env.local');
@@ -35,6 +36,63 @@ const ESCROW_ABI = [
 function numericToBytes32(num) {
     const hex = BigInt(num).toString(16);
     return '0x' + hex.padStart(64, '0');
+}
+
+// ---------------------------------------------------------
+// NEW: DIRECT SERVER QUERY (A2S_INFO)
+// Bypasses DatHost API lag to get instant player counts
+// ---------------------------------------------------------
+function queryPlayerCount(ip, port) {
+    return new Promise((resolve) => {
+        const socket = dgram.createSocket('udp4');
+        const packet = Buffer.concat([
+            Buffer.from([0xFF, 0xFF, 0xFF, 0xFF]), // Header
+            Buffer.from([0x54]),                   // T (A2S_INFO)
+            Buffer.from('Source Engine Query\0')   // Payload
+        ]);
+
+        // Timeout if server doesn't respond in 2s
+        const timeout = setTimeout(() => {
+            socket.close();
+            resolve(0); // Assume 0 on error
+        }, 2000);
+
+        socket.on('message', (msg) => {
+            clearTimeout(timeout);
+            try {
+                // Parse A2S_INFO response
+                // Byte 5 is Header (I), Byte 6 is Protocol
+                // Name starts at Byte 6 (variable length string)
+                // We skip Name, Map, Folder, Game strings to find Players
+                let offset = 6;
+                while (msg[offset] !== 0) offset++; // Skip Name
+                offset++;
+                while (msg[offset] !== 0) offset++; // Skip Map
+                offset++;
+                while (msg[offset] !== 0) offset++; // Skip Folder
+                offset++;
+                while (msg[offset] !== 0) offset++; // Skip Game
+                offset++;
+
+                offset += 2; // Skip ID
+                const players = msg[offset]; // This byte is player count
+
+                socket.close();
+                resolve(players || 0);
+            } catch (e) {
+                socket.close();
+                resolve(0);
+            }
+        });
+
+        socket.send(packet, 0, packet.length, port, ip, (err) => {
+            if (err) {
+                clearTimeout(timeout);
+                socket.close();
+                resolve(0);
+            }
+        });
+    });
 }
 
 // ---------------------------------------------------------
@@ -223,15 +281,12 @@ async function checkAutoStart(supabase) {
         .eq('status', 'LIVE')
         .is('match_started_at', null); // Not yet actually started
 
-    // Debug: Log what we found
     if (matchError) {
         console.log(`   ⚠️ [AutoStart] Query error: ${matchError.message}`);
         return;
     }
 
     if (!liveMatches || liveMatches.length === 0) {
-        // Uncomment below for verbose debugging
-        // console.log(`   [AutoStart] No LIVE matches waiting for autostart`);
         return;
     }
 
@@ -247,27 +302,21 @@ async function checkAutoStart(supabase) {
         // Get server via reverse lookup (game_servers.current_match_id points to matches.id)
         const { data: server, error: serverError } = await supabase
             .from('game_servers')
-            .select('dathost_id, name')
+            .select('dathost_id, name, ip, port')
             .eq('current_match_id', match.id)
             .single();
 
-        if (serverError) {
-            console.log(`   ⚠️ [AutoStart] Server lookup failed for match ${match.contract_match_id}: ${serverError.message}`);
-            continue;
-        }
-
-        if (!server || !server.dathost_id) {
-            console.log(`   ⚠️ [AutoStart] No server found for match ${match.contract_match_id} (match.id=${match.id})`);
+        if (serverError || !server) {
+            console.log(`   ⚠️ [AutoStart] Server lookup failed for match ${match.contract_match_id}`);
             continue;
         }
 
         try {
-            // Check player count via DatHost API
-            const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
-                headers: { 'Authorization': `Basic ${auth}` }
-            });
-            const serverInfo = await statusRes.json();
-            const playerCount = serverInfo.players_online || 0;
+            // NEW: Use direct UDP query instead of slow API
+            // This detects players INSTANTLY when they join
+            const playerCount = await queryPlayerCount(server.ip, server.port);
+
+            // console.log(`   Debug: ${server.name} has ${playerCount} players`);
 
             // If 2+ players detected
             if (playerCount >= 2) {
@@ -276,6 +325,14 @@ async function checkAutoStart(supabase) {
                     console.log(`   👥 2 players detected on ${server.name} for match ${match.contract_match_id}`);
                     console.log(`   ⏱️ Starting 30-second warmup countdown...`);
                     pendingForceReady.set(match.id, now);
+
+                    // Announce via RCON
+                    await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ line: 'say "Both players connected! Match starts in 30 seconds..."' })
+                    });
+
                 } else {
                     // Check if 30 seconds have passed
                     const detectedAt = pendingForceReady.get(match.id);
@@ -367,7 +424,7 @@ async function checkTimeouts(supabase, escrow) {
         }
     }
 
-    // B. Check stale DEPOSITING matches (only one player paid)
+    // C. Check stale DEPOSITING matches (only one player paid)
     const { data: depositingMatches } = await supabase
         .from('matches')
         .select('*')
@@ -562,20 +619,21 @@ async function processPayouts(supabase, escrow) {
 }
 
 // ---------------------------------------------------------
-// MAIN LOOP
+// MAIN LOOP - KEEP ALIVE
 // ---------------------------------------------------------
 async function run() {
+    // Note: We access vars here to ensure they loaded
     if (!PRIVATE_KEY) {
         console.error("ERROR: PAYOUT_PRIVATE_KEY not found in .env");
         process.exit(1);
     }
 
-    console.log(`[${new Date().toISOString()}] Bot cycle starting...`);
-
     const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
     const provider = new ethers.JsonRpcProvider(RPC_URL);
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
+
+    console.log(`[${new Date().toISOString()}] Bot cycle starting...`);
 
     try {
         // NEW: Verify deposits on-chain
@@ -591,7 +649,7 @@ async function run() {
         await checkTimeouts(supabase, escrow);
 
         // EXISTING: Check for forfeits (rage quits)
-        await checkForfeits(supabase);
+        // await checkForfeits(supabase); // Uncomment if implemented
 
         // EXISTING: Process payouts
         await processPayouts(supabase, escrow);
@@ -601,5 +659,8 @@ async function run() {
     }
 }
 
-// Run
+// Run immediately on start
 run();
+
+// Then run every 5 seconds to stay alive (prevents PM2 restart spam)
+setInterval(run, 5000);
