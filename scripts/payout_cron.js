@@ -329,11 +329,24 @@ async function checkAutoStart(supabase) {
         }
 
         try {
-            // NEW: Use direct UDP query instead of slow API
-            // This detects players INSTANTLY when they join
-            const playerCount = await queryPlayerCount(server.ip, server.port);
+            // Try UDP query first (instant), fall back to DatHost API if it fails
+            let playerCount = await queryPlayerCount(server.ip, server.port);
 
-            // console.log(`   Debug: ${server.name} has ${playerCount} players`);
+            // If UDP returned 0, try DatHost API as fallback (slower but reliable)
+            if (playerCount === 0 && server.dathost_id) {
+                try {
+                    const apiRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                        headers: { 'Authorization': `Basic ${auth}` }
+                    });
+                    if (apiRes.ok) {
+                        const data = await apiRes.json();
+                        playerCount = data.players_online || 0;
+                        console.log(`   [Debug] API fallback: ${playerCount} players`);
+                    }
+                } catch (e) {
+                    // Ignore API errors
+                }
+            }
 
             // If 2+ players detected
             if (playerCount >= 2) {
