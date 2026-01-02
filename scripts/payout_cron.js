@@ -353,21 +353,21 @@ async function checkAutoStart(supabase) {
                 if (!pendingForceReady.has(match.id)) {
                     // First time detecting 2 players - start countdown
                     console.log(`   👥 2 players detected on ${server.name} for match ${match.contract_match_id}`);
-                    console.log(`   ⏱️ Starting 30-second warmup countdown...`);
+                    console.log(`   ⏱️ Starting 60-second warmup countdown...`);
                     pendingForceReady.set(match.id, now);
 
                     // Announce via RCON
                     await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
                         method: 'POST',
                         headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: new URLSearchParams({ line: 'say "Both players connected! Match starts in 30 seconds..."' })
+                        body: new URLSearchParams({ line: 'say "Both players connected! Type .ready or match auto-starts in 60 seconds!"' })
                     });
 
                 } else {
                     // Check if 30 seconds have passed
                     const detectedAt = pendingForceReady.get(match.id);
                     if (now - detectedAt >= WARMUP_DELAY_MS) {
-                        console.log(`   🚀 30s warmup complete! Sending forceready for match ${match.contract_match_id}`);
+                        console.log(`   🚀 60s warmup complete! Sending forceready for match ${match.contract_match_id}`);
 
                         // Send forceready via RCON
                         await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {

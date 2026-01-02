@@ -185,6 +185,33 @@ export async function POST(req: Request) {
             return NextResponse.json({ received: true });
         }
 
+        // NEW: HANDLE GOING_LIVE (Match actually starting via .ready or forceready)
+        // This prevents the bot from sending redundant "30 seconds" messages
+        if (payload.event === 'going_live') {
+            const { matchid } = payload;
+            console.log(`Match going_live: MatchZy ID ${matchid}`);
+
+            // Find the LIVE match and set match_started_at
+            const { data: match, error } = await supabase
+                .from('matches')
+                .select('id')
+                .eq('status', 'LIVE')
+                .is('match_started_at', null)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+            if (match && !error) {
+                await supabase
+                    .from('matches')
+                    .update({ match_started_at: new Date().toISOString() })
+                    .eq('id', match.id);
+                console.log(`Set match_started_at for match ${match.id}`);
+            }
+
+            return NextResponse.json({ received: true });
+        }
+
         // NEW: HANDLE PLAYER DISCONNECT
         if (payload.event === 'player_disconnect') {
             const { matchid, player } = payload;
