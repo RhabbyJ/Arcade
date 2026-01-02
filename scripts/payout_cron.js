@@ -17,9 +17,9 @@ const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
 const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const RPC_URL = "https://sepolia.base.org";
 
-// DatHost Config
-const DATHOST_USER = process.env.DATHOST_USERNAME;
-const DATHOST_PASS = process.env.DATHOST_PASSWORD;
+// DatHost Config - ACCEPTS BOTH NAMING CONVENTIONS
+const DATHOST_USER = process.env.DATHOST_USERNAME || process.env.DATHOST_USER;
+const DATHOST_PASS = process.env.DATHOST_PASSWORD || process.env.DATHOST_PASS;
 
 // USDC Address (for tx verification)
 const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS;
