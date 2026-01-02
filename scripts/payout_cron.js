@@ -217,26 +217,49 @@ async function checkAutoStart(supabase) {
     const now = Date.now();
 
     // Find LIVE matches that haven't been force-started yet
-    const { data: liveMatches } = await supabase
+    const { data: liveMatches, error: matchError } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'LIVE')
         .is('match_started_at', null); // Not yet actually started
 
-    if (!liveMatches || liveMatches.length === 0) return;
+    // Debug: Log what we found
+    if (matchError) {
+        console.log(`   ⚠️ [AutoStart] Query error: ${matchError.message}`);
+        return;
+    }
 
-    if (!DATHOST_USER || !DATHOST_PASS) return;
+    if (!liveMatches || liveMatches.length === 0) {
+        // Uncomment below for verbose debugging
+        // console.log(`   [AutoStart] No LIVE matches waiting for autostart`);
+        return;
+    }
+
+    console.log(`   🔍 [AutoStart] Found ${liveMatches.length} LIVE match(es) pending autostart`);
+
+    if (!DATHOST_USER || !DATHOST_PASS) {
+        console.log(`   ⚠️ [AutoStart] DatHost credentials not configured`);
+        return;
+    }
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
     for (const match of liveMatches) {
         // Get server via reverse lookup (game_servers.current_match_id points to matches.id)
-        const { data: server } = await supabase
+        const { data: server, error: serverError } = await supabase
             .from('game_servers')
             .select('dathost_id, name')
             .eq('current_match_id', match.id)
             .single();
 
-        if (!server || !server.dathost_id) continue;
+        if (serverError) {
+            console.log(`   ⚠️ [AutoStart] Server lookup failed for match ${match.contract_match_id}: ${serverError.message}`);
+            continue;
+        }
+
+        if (!server || !server.dathost_id) {
+            console.log(`   ⚠️ [AutoStart] No server found for match ${match.contract_match_id} (match.id=${match.id})`);
+            continue;
+        }
 
         try {
             // Check player count via DatHost API
