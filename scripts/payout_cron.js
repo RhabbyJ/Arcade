@@ -354,37 +354,25 @@ async function checkAutoStart(supabase) {
         }
 
         try {
-            console.log(`   🔎 Match ${match.contract_match_id}: Querying server ${server.ip}:${server.port}...`);
+            console.log(`   🔎 Match ${match.contract_match_id}: Checking player count via DatHost API...`);
 
-            // UDP Query with extra timeout wrapper
+            // Use DatHost API directly (UDP/dns.lookup can freeze)
             let playerCount = 0;
-            let udpCount = 0;
             try {
-                playerCount = await Promise.race([
-                    queryPlayerCount(server.ip, server.port),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('UDP timeout')), 3000))
-                ]);
-                udpCount = playerCount;
-            } catch (udpErr) {
-                console.log(`   ⚠️ Match ${match.contract_match_id}: UDP failed (${udpErr.message}), using API fallback`);
-            }
-
-            // API Fallback if UDP fails
-            if (playerCount === 0) {
-                try {
-                    const statusRes = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
-                        headers: { 'Authorization': `Basic ${auth}` }
-                    });
-                    if (statusRes.ok) {
-                        const serverInfo = await statusRes.json();
-                        playerCount = serverInfo.players_online || 0;
-                    }
-                } catch (apiErr) {
-                    console.log(`   ⚠️ Match ${match.contract_match_id}: API fallback failed: ${apiErr.message}`);
+                const statusRes = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                    headers: { 'Authorization': `Basic ${auth}` }
+                });
+                if (statusRes.ok) {
+                    const serverInfo = await statusRes.json();
+                    playerCount = serverInfo.players_online || 0;
+                } else {
+                    console.log(`   ⚠️ Match ${match.contract_match_id}: API returned ${statusRes.status}`);
                 }
+            } catch (apiErr) {
+                console.log(`   ⚠️ Match ${match.contract_match_id}: API failed: ${apiErr.message}`);
             }
 
-            console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} player(s) detected (UDP: ${udpCount})`);
+            console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} player(s) detected`);
 
             // RCON Helper with logging
             const sendRcon = async (cmd) => {
@@ -404,6 +392,7 @@ async function checkAutoStart(supabase) {
                     }
                 }
             };
+
 
             const currentState = pendingForceReady.get(match.id);
 
