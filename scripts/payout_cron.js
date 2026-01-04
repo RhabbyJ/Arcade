@@ -303,11 +303,23 @@ async function checkAutoStart(supabase) {
             }
         }
 
-        const { data: server } = await supabase
-            .from('game_servers')
-            .select('dathost_id, name, ip, port')
-            .eq('current_match_id', match.id)
-            .single();
+        let server;
+        try {
+            const { data, error } = await supabase
+                .from('game_servers')
+                .select('dathost_id, name, ip, port')
+                .eq('current_match_id', match.id)
+                .single();
+
+            if (error) {
+                console.log(`   ⚠️ Match ${match.contract_match_id}: Server query error: ${error.message}`);
+                continue;
+            }
+            server = data;
+        } catch (e) {
+            console.log(`   ❌ Match ${match.contract_match_id}: Server query failed: ${e.message}`);
+            continue;
+        }
 
         if (!server) {
             console.log(`   ⚠️ Match ${match.contract_match_id}: No server assigned`);
@@ -315,17 +327,38 @@ async function checkAutoStart(supabase) {
         }
 
         try {
-            // UDP Query (Instant)
-            let playerCount = await queryPlayerCount(server.ip, server.port);
-            const udpCount = playerCount;
+            console.log(`   🔎 Match ${match.contract_match_id}: Querying server ${server.ip}:${server.port}...`);
+
+            // UDP Query with extra timeout wrapper
+            let playerCount = 0;
+            let udpCount = 0;
+            try {
+                playerCount = await Promise.race([
+                    queryPlayerCount(server.ip, server.port),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('UDP timeout')), 3000))
+                ]);
+                udpCount = playerCount;
+            } catch (udpErr) {
+                console.log(`   ⚠️ Match ${match.contract_match_id}: UDP failed (${udpErr.message}), using API fallback`);
+            }
 
             // API Fallback if UDP fails
             if (playerCount === 0) {
-                const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
-                    headers: { 'Authorization': `Basic ${auth}` }
-                });
-                const serverInfo = await statusRes.json();
-                playerCount = serverInfo.players_online || 0;
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+                    const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                        headers: { 'Authorization': `Basic ${auth}` },
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+
+                    const serverInfo = await statusRes.json();
+                    playerCount = serverInfo.players_online || 0;
+                } catch (apiErr) {
+                    console.log(`   ⚠️ Match ${match.contract_match_id}: API fallback failed: ${apiErr.message}`);
+                }
             }
 
             console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} player(s) detected (UDP: ${udpCount})`);
