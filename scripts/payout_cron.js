@@ -259,11 +259,15 @@ async function assignServers(supabase) {
 }
 
 // ---------------------------------------------------------
-// 2B. AUTO-START MATCHES (Check for 2 players, forceready after 60s)
+// 2B. AUTO-START MATCHES (Dynamic Warmup Logic)
 // ---------------------------------------------------------
+// State machine: WAITING_P2 (1 player, 2 min timer) -> READY_COUNTDOWN (2 players, 30s timer)
+// If P2 doesn't join within 2 mins, match is cancelled
 const pendingForceReady = new Map();
-const WARMUP_DELAY_MS = 60 * 1000; // 60 second warmup
-const MINIMUM_WAIT_AFTER_LIVE = 30 * 1000; // 30 seconds wait for map load
+const WARMUP_DELAY_P1 = 120 * 1000; // 2 minutes for P2 to join
+const WARMUP_DELAY_P2 = 30 * 1000;  // 30 seconds when both players are in
+const MINIMUM_WAIT_AFTER_LIVE = 5 * 1000; // 5 seconds wait after server assignment (reduced from 15s)
+
 
 async function checkAutoStart(supabase) {
     const now = Date.now();
@@ -281,6 +285,8 @@ async function checkAutoStart(supabase) {
 
     if (!liveMatches || liveMatches.length === 0) return;
 
+    console.log(`   🔍 [AutoStart] Found ${liveMatches.length} LIVE match(es) awaiting warmup`);
+
     if (!DATHOST_USER || !DATHOST_PASS) {
         console.log(`   ⚠️ [AutoStart] DatHost credentials not configured`);
         return;
@@ -288,32 +294,32 @@ async function checkAutoStart(supabase) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
     for (const match of liveMatches) {
-        // --- FIX 2: PREVENT STALE DATA ON MAP CHANGE ---
-        // Ensure the match has been LIVE for at least 30 seconds before checking players.
-        // This gives DatHost time to clear the "2 players" from the previous session.
+        // Wait a few seconds after server assignment for map to load
         if (match.server_assigned_at) {
             const assignedAt = new Date(match.server_assigned_at).getTime();
             if (now - assignedAt < MINIMUM_WAIT_AFTER_LIVE) {
-                // console.log(`   ⏳ Match ${match.contract_match_id} loading map... (${Math.round((MINIMUM_WAIT_AFTER_LIVE - (now - assignedAt))/1000)}s left)`);
+                console.log(`   ⏳ Match ${match.contract_match_id}: Waiting for map to load (${Math.ceil((MINIMUM_WAIT_AFTER_LIVE - (now - assignedAt)) / 1000)}s left)`);
                 continue;
             }
         }
 
-        const { data: server, error: serverError } = await supabase
+        const { data: server } = await supabase
             .from('game_servers')
             .select('dathost_id, name, ip, port')
             .eq('current_match_id', match.id)
             .single();
 
-        if (serverError || !server) {
-            console.log(`   ⚠️ [AutoStart] Server lookup failed for match ${match.contract_match_id}`);
+        if (!server) {
+            console.log(`   ⚠️ Match ${match.contract_match_id}: No server assigned`);
             continue;
         }
 
         try {
-            // UDP with API Fallback
+            // UDP Query (Instant)
             let playerCount = await queryPlayerCount(server.ip, server.port);
+            const udpCount = playerCount;
 
+            // API Fallback if UDP fails
             if (playerCount === 0) {
                 const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
                     headers: { 'Authorization': `Basic ${auth}` }
@@ -322,79 +328,101 @@ async function checkAutoStart(supabase) {
                 playerCount = serverInfo.players_online || 0;
             }
 
-            // Helper for RCON
+            console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} player(s) detected (UDP: ${udpCount})`);
+
+            // RCON Helper with logging
             const sendRcon = async (cmd) => {
-                await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({ line: cmd })
-                });
+                const lines = cmd.split(';');
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (!trimmedLine) continue;
+                    console.log(`   📡 RCON → ${trimmedLine}`);
+                    await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: new URLSearchParams({ line: trimmedLine })
+                    });
+                }
             };
 
-            // If 2+ players detected
-            if (playerCount >= 2) {
-                if (!pendingForceReady.has(match.id)) {
-                    // --- INITIAL DETECT ---
-                    console.log(`   👥 2 players detected on ${server.name} for match ${match.contract_match_id}`);
-                    console.log(`   ⏱️ Starting 60-second warmup countdown...`);
+            const currentState = pendingForceReady.get(match.id);
 
-                    pendingForceReady.set(match.id, {
-                        start: now,
-                        alerted30: false,
-                        alerted10: false
-                    });
+            // ========== STATE: 1 PLAYER (WAITING FOR P2) ==========
+            if (playerCount === 1) {
+                if (!currentState || currentState.state !== 'WAITING_P2') {
+                    // First detection of 1 player
+                    console.log(`   👤 Match ${match.contract_match_id}: 1 player joined. Starting 2-min countdown for P2.`);
+                    pendingForceReady.set(match.id, { state: 'WAITING_P2', start: now });
 
-                    await sendRcon('say "Both players connected! Match auto-starts in 60 seconds (or type .ready)!"');
-
+                    await sendRcon('mp_warmuptime 120');
+                    await sendRcon('mp_warmup_start');
+                    await sendRcon('say "Waiting for opponent... 2 minutes remaining. Type .ready when ready!"');
                 } else {
-                    // --- COUNTDOWN LOGIC ---
-                    const state = pendingForceReady.get(match.id);
-                    const elapsed = now - state.start;
-                    const remaining = WARMUP_DELAY_MS - elapsed;
+                    // Check if P1 timeout expired (P2 never joined)
+                    const elapsed = now - currentState.start;
+                    if (elapsed >= WARMUP_DELAY_P1) {
+                        console.log(`   ⏰ Match ${match.contract_match_id}: P2 never joined. Cancelling match.`);
 
-                    // 30 Seconds Remaining Check
-                    if (remaining <= 30000 && remaining > 25000 && !state.alerted30) {
-                        state.alerted30 = true;
-                        pendingForceReady.set(match.id, state);
-                        await sendRcon('say "Match starting in 30 seconds..."');
-                        console.log(`   📢 30s alert sent for ${match.contract_match_id}`);
+                        await sendRcon('say "Opponent did not join in time. Match cancelled."');
+                        await sendRcon('kickall');
+
+                        // Cancel the match in database
+                        await supabase.from('matches').update({
+                            status: 'CANCELLED',
+                            payout_status: 'REFUND_PENDING'
+                        }).eq('id', match.id);
+
+                        // Free the server
+                        await supabase.from('game_servers').update({
+                            status: 'FREE',
+                            current_match_id: null
+                        }).eq('current_match_id', match.id);
+
+                        pendingForceReady.delete(match.id);
                     }
+                }
+            }
+            // ========== STATE: 2 PLAYERS (READY COUNTDOWN) ==========
+            else if (playerCount >= 2) {
+                if (!currentState || currentState.state !== 'READY_COUNTDOWN') {
+                    // Both players joined - accelerate to 30s
+                    console.log(`   👥 Match ${match.contract_match_id}: Both players connected! 30s countdown started.`);
+                    pendingForceReady.set(match.id, { state: 'READY_COUNTDOWN', start: now });
 
-                    // 10 Seconds Remaining Check
-                    if (remaining <= 10000 && remaining > 5000 && !state.alerted10) {
-                        state.alerted10 = true;
-                        pendingForceReady.set(match.id, state);
-                        await sendRcon('say "Match starting in 10 seconds!"');
-                        console.log(`   📢 10s alert sent for ${match.contract_match_id}`);
-                    }
+                    await sendRcon('mp_warmuptime 30');
+                    await sendRcon('mp_warmup_start');
+                    await sendRcon('say "Both players connected! Match starts in 30 seconds. Type .ready to start now!"');
+                } else {
+                    // Check if 30s expired
+                    const elapsed = now - currentState.start;
+                    if (elapsed >= WARMUP_DELAY_P2) {
+                        console.log(`   🚀 Match ${match.contract_match_id}: 30s warmup complete. Force-starting match!`);
 
-                    // --- TIME UP: FORCE START ---
-                    if (elapsed >= WARMUP_DELAY_MS) {
-                        console.log(`   🚀 60s warmup complete! Sending css_start for match ${match.contract_match_id}`);
-
-                        // --- FIX 1: CORRECT COMMAND ---
-                        await sendRcon('css_start'); // MatchZy .start command
+                        await sendRcon('css_start');
 
                         await supabase.from('matches').update({
                             match_started_at: new Date().toISOString()
                         }).eq('id', match.id);
 
                         pendingForceReady.delete(match.id);
-                        console.log(`   ✅ Match ${match.contract_match_id} is now LIVE and playing!`);
+                        console.log(`   ✅ Match ${match.contract_match_id} is now LIVE!`);
                     }
                 }
-            } else {
-                // Less than 2 players - reset countdown
-                if (pendingForceReady.has(match.id)) {
-                    console.log(`   ⚠️ Player left, resetting warmup countdown for match ${match.contract_match_id}`);
+            }
+            // ========== STATE: 0 PLAYERS (EMPTY) ==========
+            else {
+                if (currentState) {
+                    console.log(`   ⚠️ Match ${match.contract_match_id}: All players left. Resetting state.`);
                     pendingForceReady.delete(match.id);
                 }
             }
+
         } catch (e) {
-            console.error(`Error checking auto-start for match ${match.contract_match_id}:`, e.message);
+            console.error(`   ❌ Error in checkAutoStart for match ${match.contract_match_id}:`, e.message);
         }
     }
 }
+
 
 // ---------------------------------------------------------
 // 3. CHECK TIMEOUTS (NEW - Auto-cancel stale matches)

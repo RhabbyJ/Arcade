@@ -25,7 +25,7 @@ export async function POST(req: Request) {
         // We use round_end because series_end payload often lacks player data (empty players array).
         if (payload.event === 'round_end') {
             const { matchid, team1, team2 } = payload;
-            const WINNING_SCORE = 1; // Updated to 1 for testing (since mp_maxrounds is 1)
+            const WINNING_SCORE = 1; // Set to 1 for testing
 
             // Ignore "Game Commencing" (16) or other non-result reasons
             // Also ignore if players array is empty (MatchZy bug/timing issue)
