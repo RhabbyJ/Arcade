@@ -293,7 +293,7 @@ async function assignServers(supabase) {
 const pendingForceReady = new Map();
 const WARMUP_DELAY_P1 = 120 * 1000; // 2 minutes for P2 to join
 const WARMUP_DELAY_P2 = 30 * 1000;  // 30 seconds when both players are in
-const MINIMUM_WAIT_AFTER_LIVE = 5 * 1000; // 5 seconds wait after server assignment (reduced from 15s)
+const MINIMUM_WAIT_AFTER_LIVE = 15 * 1000; // 15 seconds wait for map load + API update
 
 
 async function checkAutoStart(supabase) {
