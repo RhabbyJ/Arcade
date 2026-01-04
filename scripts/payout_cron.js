@@ -241,13 +241,16 @@ async function checkAutoStart(supabase) {
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
-        // Get player count
-        let playerCount = await queryPlayerCount(server.ip, server.port);
-        if (playerCount === 0) {
-            try {
-                const res = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, { headers: { 'Authorization': `Basic ${auth}` } });
-                if (res.ok) playerCount = (await res.json()).players_online || 0;
-            } catch (e) { /* ignore */ }
+        // Get player count from DatHost API (no UDP - it can hang)
+        let playerCount = 0;
+        try {
+            const res = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                headers: { 'Authorization': `Basic ${auth}` },
+                timeout: 3000
+            });
+            if (res.ok) playerCount = (await res.json()).players_online || 0;
+        } catch (e) {
+            console.log(`   ⚠️ API timeout for match ${match.contract_match_id}`);
         }
 
         console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} player(s) detected`);
