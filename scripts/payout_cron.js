@@ -39,6 +39,29 @@ function numericToBytes32(num) {
     return '0x' + hex.padStart(64, '0');
 }
 
+/**
+ * CRITICAL FIX: Wrapper for fetch to prevent bot freezing
+ * If DatHost doesn't respond in 5 seconds, this throws an error so the loop continues.
+ */
+async function fetchWithTimeout(resource, options = {}) {
+    const { timeout = 5000 } = options; // 5 second default timeout
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+
+    try {
+        const response = await fetch(resource, {
+            ...options,
+            signal: controller.signal
+        });
+        clearTimeout(id);
+        return response;
+    } catch (error) {
+        clearTimeout(id);
+        throw error;
+    }
+}
+
+
 // ---------------------------------------------------------
 // NEW: DIRECT SERVER QUERY (A2S_INFO)
 // Bypasses DatHost API lag to get instant player counts
@@ -219,14 +242,18 @@ async function assignServers(supabase) {
             const WORKSHOP_MAP_ID = '3344743064';
 
             const sendRcon = async (command) => {
-                await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Basic ${auth}`,
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    },
-                    body: new URLSearchParams({ line: command })
-                });
+                try {
+                    await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Basic ${auth}`,
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: new URLSearchParams({ line: command })
+                    });
+                } catch (e) {
+                    console.log(`   ❌ RCON timeout: ${command}`);
+                }
             };
 
             try {
@@ -345,17 +372,13 @@ async function checkAutoStart(supabase) {
             // API Fallback if UDP fails
             if (playerCount === 0) {
                 try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-                    const statusRes = await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
-                        headers: { 'Authorization': `Basic ${auth}` },
-                        signal: controller.signal
+                    const statusRes = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}`, {
+                        headers: { 'Authorization': `Basic ${auth}` }
                     });
-                    clearTimeout(timeoutId);
-
-                    const serverInfo = await statusRes.json();
-                    playerCount = serverInfo.players_online || 0;
+                    if (statusRes.ok) {
+                        const serverInfo = await statusRes.json();
+                        playerCount = serverInfo.players_online || 0;
+                    }
                 } catch (apiErr) {
                     console.log(`   ⚠️ Match ${match.contract_match_id}: API fallback failed: ${apiErr.message}`);
                 }
@@ -370,11 +393,15 @@ async function checkAutoStart(supabase) {
                     const trimmedLine = line.trim();
                     if (!trimmedLine) continue;
                     console.log(`   📡 RCON → ${trimmedLine}`);
-                    await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: new URLSearchParams({ line: trimmedLine })
-                    });
+                    try {
+                        await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: new URLSearchParams({ line: trimmedLine })
+                        });
+                    } catch (e) {
+                        console.log(`   ❌ RCON timeout: ${trimmedLine}`);
+                    }
                 }
             };
 
