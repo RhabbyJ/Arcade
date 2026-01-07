@@ -31,7 +31,6 @@ const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const RPC_URL = "https://sepolia.base.org";
 const DATHOST_USER = process.env.DATHOST_USERNAME;
 const DATHOST_PASS = process.env.DATHOST_PASSWORD;
-const DATHOST_PASS = process.env.DATHOST_PASSWORD;
 
 // ABI
 const ESCROW_ABI = [
