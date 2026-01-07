@@ -180,9 +180,10 @@ async function assignServers(supabase) {
         await sendRcon(server.dathost_id, commands);
 
         // C. Set Match to LIVE
+        // Note: We removed 'server_id' column update to avoid errors if column type mismatches.
+        // The link is established via game_servers.current_match_id
         await supabase.from('matches').update({
             status: 'LIVE',
-            server_id: server.id,
             match_start_time: new Date().toISOString()
         }).eq('id', match.id);
 
