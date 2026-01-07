@@ -165,7 +165,6 @@ async function checkAutoStart(supabase, escrow) {
     if (!matches) return;
 
     for (const match of matches) {
-        // 1. Wait for map load (15s buffer)
         if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 15000) continue;
 
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
@@ -177,7 +176,6 @@ async function checkAutoStart(supabase, escrow) {
 
         console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players Connected (DB Check)`);
 
-        // --- 0 PLAYERS ---
         if (playerCount === 0) {
             warmupState.delete(match.id);
             afkState.delete(match.id);
@@ -200,7 +198,7 @@ async function checkAutoStart(supabase, escrow) {
 
                 if (elapsed > AFK_TIMEOUT_MS) {
                     console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout.`);
-                    await sendRcon(server.dathost_id, ['say "Match Cancelled (AFK)"', 'css_endmatch', 'mp_warmup_end', 'host_workshop_map 3344743064']);
+                    await sendRcon(server.dathost_id, ['say "Match Cancelled (AFK)"', 'css_endmatch', 'host_workshop_map 3344743064']);
                     await refundPlayer(supabase, escrow, match, match.player1_address);
                     await supabase.from('matches').update({ status: 'CANCELLED', payout_status: 'REFUND_PENDING' }).eq('id', match.id);
                     await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
@@ -215,19 +213,17 @@ async function checkAutoStart(supabase, escrow) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
             if (!warmupState.has(match.id)) {
-                // *** THE FIX: ADDED 5s BUFFER ***
-                // This prevents the race condition where the bot sends mp_warmuptime 30
-                // before the server finishes processing player_connect, which would reset the timer
+                // FIXED: Just wait 5s for stability, then set time directly.
+                // NO mp_warmup_start or mp_warmup_end! Those trigger config reload.
                 console.log(`   ⏳ Both Connected. Waiting 5s for server stability...`);
                 await new Promise(r => setTimeout(r, 5000));
 
-                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: Forcing HUD Update & 30s Timer.`);
+                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: Forcing 30s Timer (No Restart).`);
 
+                // Just modify the ACTIVE timer without restarting warmup phase
                 await sendRcon(server.dathost_id, [
-                    'mp_warmup_end',          // Force end current state
-                    'mp_warmuptime 30',       // Set time
-                    'mp_warmup_start',        // Restart warmup (Updates HUD)
-                    'mp_warmup_pausetimer 0', // Ensure it ticks
+                    'mp_warmuptime 30',       // Set time directly
+                    'mp_warmup_pausetimer 0', // Ensure it's counting down
                     'say "Both players connected! Match starts in 30s..."',
                     'say "Type .ready to skip wait!"'
                 ]);
@@ -236,7 +232,7 @@ async function checkAutoStart(supabase, escrow) {
             } else {
                 const state = warmupState.get(match.id);
                 if (!state.started && now - state.start > WARMUP_COUNTDOWN_MS) {
-                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s warmup elapsed)`);
+                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s elapsed)`);
                     await sendRcon(server.dathost_id, ['css_start', 'say "GLHF!"']);
                     await supabase.from('matches').update({ match_started_at: new Date().toISOString() }).eq('id', match.id);
                     state.started = true;
@@ -346,7 +342,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (v4 - Stable + 5s Timer Delay)");
+    console.log("🤖 Bot Started (Version C.2 - No Config Reload)");
 
     while (true) {
         try {
