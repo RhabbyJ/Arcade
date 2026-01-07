@@ -66,7 +66,7 @@ async function sendRcon(dathostId, lines) {
 
     for (const line of lines) {
         try {
-            const res = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
+            await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Basic ${auth}`,
@@ -74,13 +74,8 @@ async function sendRcon(dathostId, lines) {
                 },
                 body: new URLSearchParams({ line })
             });
-
-            // DEBUG: Check if DatHost accepted the command
-            if (!res.ok) {
-                console.error(`[RCON FAIL] ${line} -> Status: ${res.status} ${res.statusText}`);
-            }
         } catch (e) {
-            console.error("RCON Network Error:", e.message);
+            console.error("RCON Error:", e.message);
         }
     }
 }
@@ -213,26 +208,23 @@ async function checkAutoStart(supabase, escrow) {
             continue;
         }
 
-        // --- 2 PLAYERS (Warmup Director) ---
+        // --- 2 PLAYERS (Warmup Director - Active Enforcer) ---
         if (playerCount >= 2) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
+            // Logic: Continuously enforce the timer, don't restart the phase.
             if (!warmupState.has(match.id)) {
                 console.log(`   ⏳ Both Connected. Waiting 5s for stability...`);
                 await new Promise(r => setTimeout(r, 5000));
 
-                console.log(`[${new Date().toISOString()}] 🔨 Match ${match.contract_match_id}: HAMMERING Warmup to 30s.`);
+                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: ACTIVELY SETTING 30s TIMER.`);
 
-                // THE "HAMMER" SEQUENCE
-                // 1. End the current broken warmup
-                // 2. Set the variables
-                // 3. Force a fresh start (This updates the HUD)
+                // NO RESTART - JUST MODIFY
+                // We pulse the pause timer to force the HUD to notice the change
                 await sendRcon(server.dathost_id, [
-                    'mp_warmup_end',                          // The Hammer
-                    'mp_warmuptime 30',                       // The Target
-                    'mp_warmuptime_all_players_connected 0',  // Safety
-                    'mp_warmup_start',                        // The Restart
-                    'mp_warmup_pausetimer 0',                 // The Ticker
+                    'mp_warmup_pausetimer 1',
+                    'mp_warmuptime 30',
+                    'mp_warmup_pausetimer 0',
                     'say "Both players connected! Match starts in 30s..."',
                     'say "Type .ready to skip wait!"'
                 ]);
@@ -240,6 +232,13 @@ async function checkAutoStart(supabase, escrow) {
                 warmupState.set(match.id, { start: Date.now(), started: false });
             } else {
                 const state = warmupState.get(match.id);
+
+                // ENFORCER: Pulse the timer every 10 seconds to make sure it sticks
+                if (!state.started && (now - state.start) % 10000 < 2000) {
+                    await sendRcon(server.dathost_id, ['mp_warmup_pausetimer 0']);
+                }
+
+                // FORCE START Check
                 if (!state.started && now - state.start > WARMUP_COUNTDOWN_MS) {
                     console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s elapsed)`);
                     await sendRcon(server.dathost_id, ['css_start', 'say "GLHF!"']);
@@ -351,7 +350,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version C.5 - Hammer)");
+    console.log("🤖 Bot Started (Version D - Active Enforcer)");
 
     while (true) {
         try {
