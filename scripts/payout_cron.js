@@ -51,6 +51,36 @@ function numericToBytes32(num) {
 const warmupTracker = new Map();
 
 // ---------------------------------------------------------
+// STARTUP CLEANUP - Reset orphaned servers
+// ---------------------------------------------------------
+async function cleanupOrphanedServers(supabase) {
+    // Find servers that are BUSY but have no match assigned
+    const { data: orphanedServers, error } = await supabase
+        .from('game_servers')
+        .select('id, name, status, current_match_id')
+        .eq('status', 'BUSY')
+        .is('current_match_id', null);
+
+    if (error) {
+        console.error("Error checking for orphaned servers:", error.message);
+        return;
+    }
+
+    if (orphanedServers && orphanedServers.length > 0) {
+        console.log(`🔧 Found ${orphanedServers.length} orphaned server(s), resetting to FREE...`);
+        for (const server of orphanedServers) {
+            console.log(`   - Resetting: ${server.name} (ID: ${server.id})`);
+            await supabase
+                .from('game_servers')
+                .update({ status: 'FREE', current_match_id: null })
+                .eq('id', server.id);
+        }
+        console.log("✅ Orphaned servers cleaned up");
+    }
+}
+
+
+// ---------------------------------------------------------
 // NETWORK HELPERS
 // ---------------------------------------------------------
 async function getDatHostServerInfo(dathostId) {
@@ -136,26 +166,41 @@ async function verifyDeposits(supabase, provider) {
 // ---------------------------------------------------------
 async function assignServers(supabase) {
     // 1. Find matches ready for a server
-    const { data: matches } = await supabase
+    const { data: matches, error: matchError } = await supabase
         .from('matches')
         .select('*')
         .eq('status', 'DEPOSITING')
         .eq('p1_deposited', true)
         .eq('p2_deposited', true);
 
+    if (matchError) {
+        console.error("Error fetching matches:", matchError.message);
+        return;
+    }
+
     if (!matches || matches.length === 0) return;
 
+    console.log(`📋 Found ${matches.length} match(es) ready for server assignment`);
+
     // 2. Find free servers
-    const { data: servers } = await supabase
+    const { data: servers, error: serverError } = await supabase
         .from('game_servers')
         .select('*')
         .eq('status', 'FREE')
         .limit(matches.length);
 
+    if (serverError) {
+        console.error("Error fetching servers:", serverError.message);
+        return;
+    }
+
     if (!servers || servers.length === 0) {
         console.log("⚠️ No free servers available for pending matches.");
         return;
     }
+
+    console.log(`🖥️ Found ${servers.length} free server(s)`);
+
 
     // 3. Assign
     for (let i = 0; i < Math.min(matches.length, servers.length); i++) {
@@ -365,7 +410,10 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Restored w/ Timeouts)");
+    console.log("🤖 Bot Started (v2 - with auto-cleanup)");
+
+    // Cleanup any orphaned servers from previous crashes
+    await cleanupOrphanedServers(supabase);
 
     while (true) {
         try {
