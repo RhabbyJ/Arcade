@@ -184,7 +184,8 @@ async function assignServers(supabase) {
         // The link is established via game_servers.current_match_id
         await supabase.from('matches').update({
             status: 'LIVE',
-            match_start_time: new Date().toISOString()
+            match_start_time: new Date().toISOString(),
+            server_assigned_at: new Date().toISOString()
         }).eq('id', match.id);
 
         console.log(`🚀 Match ${match.id} is LIVE!`);
