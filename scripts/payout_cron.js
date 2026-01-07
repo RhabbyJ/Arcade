@@ -34,69 +34,104 @@ function numericToBytes32(num) {
 const warmupTracker = new Map();
 
 // ---------------------------------------------------------
-// 1. VERIFY DEPOSITS (Mockup based on description)
+// 1. VERIFY DEPOSITS - Check blockchain for confirmed tx
 // ---------------------------------------------------------
 async function verifyDeposits(supabase, provider) {
-    // In a real scenario, this checks tx hashes in DB and confirms them on-chain
-    // For now, we assume the frontend/webhook handles the 'WAITING' -> 'DEPOSITED' logic
-    // or we verify hashes if provided. 
-    // This function is kept as a placeholder to maintain the 5-step architecture.
+    const { data: matches, error } = await supabase
+        .from('matches')
+        .select('*')
+        .eq('status', 'DEPOSITING')
+        .or('p1_tx_hash.not.is.null,p2_tx_hash.not.is.null');
+
+    if (error || !matches || matches.length === 0) return;
+
+    for (const match of matches) {
+        // Re-check status to avoid race conditions
+        const { data: freshMatch } = await supabase.from('matches').select('status').eq('id', match.id).single();
+        if (!freshMatch || freshMatch.status !== 'DEPOSITING') continue;
+
+        const verifyTx = async (txHash) => {
+            try {
+                const receipt = await provider.getTransactionReceipt(txHash);
+                return receipt && receipt.status === 1;
+            } catch (e) { return false; }
+        };
+
+        // Verify P1 deposit
+        if (match.p1_tx_hash && !match.p1_deposited && await verifyTx(match.p1_tx_hash)) {
+            console.log(`✅ P1 Deposit VERIFIED for match ${match.contract_match_id}`);
+            await supabase.from('matches').update({ p1_deposited: true }).eq('id', match.id);
+        }
+
+        // Verify P2 deposit
+        if (match.p2_tx_hash && !match.p2_deposited && await verifyTx(match.p2_tx_hash)) {
+            console.log(`✅ P2 Deposit VERIFIED for match ${match.contract_match_id}`);
+            await supabase.from('matches').update({ p2_deposited: true }).eq('id', match.id);
+        }
+    }
 }
 
 // ---------------------------------------------------------
-// 2. ASSIGN SERVERS
+// 2. ASSIGN SERVERS - When both deposits confirmed
 // ---------------------------------------------------------
 async function assignServers(supabase) {
-    // 1. Get Matches needing a server (Both Deposited, Status WAITING)
-    // Adjust query based on your actual schema flow
+    // Get matches where BOTH deposits are confirmed
     const { data: matches } = await supabase
         .from('matches')
         .select('*')
-        .eq('status', 'WAITING') // Assuming WAITING means "Ready for server"
+        .eq('status', 'DEPOSITING')  // FIXED: was 'WAITING', should be 'DEPOSITING'
         .eq('p1_deposited', true)
-        .eq('p2_deposited', true);
+        .eq('p2_deposited', true)
+        .is('server_id', null);  // Not yet assigned
 
     if (!matches || matches.length === 0) return;
 
-    // 2. Get Free Servers
+    // Get Free Servers
     const { data: servers } = await supabase
         .from('game_servers')
         .select('*')
         .eq('status', 'FREE')
         .limit(matches.length);
 
-    if (!servers || servers.length === 0) return;
+    if (!servers || servers.length === 0) {
+        console.log(`⚠️ No free servers available for ${matches.length} pending match(es).`);
+        return;
+    }
 
-    // 3. Assign
+    // Assign servers
     for (let i = 0; i < Math.min(matches.length, servers.length); i++) {
         const match = matches[i];
         const server = servers[i];
 
-        console.log(`Assigning Match ${match.id} to Server ${server.id}...`);
+        console.log(`🎮 Assigning Match ${match.contract_match_id} to Server ${server.name}...`);
 
-        // Prepare Server via DatHost API (Reliable RCON)
+        // Prepare Server via DatHost API
         const commands = [
-            'get5_endmatch',        // Ensure clean state
-            'css_endmatch',         // MatchZy clean state
-            'host_workshop_map 3344743064', // Reload map to flush vars
-            'exec 1v1.cfg'          // Load Game Config
+            'get5_endmatch',
+            'css_endmatch',
+            'host_workshop_map 3344743064',
+            'exec 1v1.cfg'
         ];
 
         await sendRcon(server.dathost_id, commands);
 
-        // Update DB
+        // Update match to LIVE
         await supabase.from('matches').update({
             status: 'LIVE',
             server_id: server.id,
-            match_start_time: new Date().toISOString()
+            server_assigned_at: new Date().toISOString()
         }).eq('id', match.id);
 
+        // Mark server as BUSY
         await supabase.from('game_servers').update({
             status: 'BUSY',
             current_match_id: match.id
         }).eq('id', server.id);
+
+        console.log(`   🚀 Match ${match.contract_match_id} is now LIVE!`);
     }
 }
+
 
 // ---------------------------------------------------------
 // 3. CHECK AUTO START (The Warmup Fix)
