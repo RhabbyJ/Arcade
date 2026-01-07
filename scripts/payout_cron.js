@@ -141,7 +141,7 @@ async function verifyDeposits(supabase, provider) {
             try {
                 const tx = await provider.getTransactionReceipt(match.p1_tx_hash);
                 if (tx && tx.status === 1) {
-                    console.log(`✅ P1 Deposit Verified: ${match.id}`);
+                    console.log(`[${new Date().toISOString()}] ✅ P1 Deposit VERIFIED: Match ${match.contract_match_id}`);
                     await supabase.from('matches').update({ p1_deposited: true }).eq('id', match.id);
                 }
             } catch (e) { console.error("Tx Check Error:", e.message); }
@@ -152,7 +152,7 @@ async function verifyDeposits(supabase, provider) {
             try {
                 const tx = await provider.getTransactionReceipt(match.p2_tx_hash);
                 if (tx && tx.status === 1) {
-                    console.log(`✅ P2 Deposit Verified: ${match.id}`);
+                    console.log(`[${new Date().toISOString()}] ✅ P2 Deposit VERIFIED: Match ${match.contract_match_id}`);
                     await supabase.from('matches').update({ p2_deposited: true }).eq('id', match.id);
                 }
             } catch (e) { console.error("Tx Check Error:", e.message); }
@@ -206,7 +206,7 @@ async function assignServers(supabase) {
         const match = matches[i];
         const server = servers[i];
 
-        console.log(`🎮 Assigning Server ${server.name} to Match ${match.id}`);
+        console.log(`[${new Date().toISOString()}] 🎮 Assigning Server ${server.name} to Match ${match.contract_match_id}`);
 
         // A. Lock Server FIRST
         await supabase.from('game_servers').update({
@@ -244,7 +244,7 @@ async function assignServers(supabase) {
                 console.log(`✅ Match ${match.id} set to LIVE on retry`);
             }
         } else {
-            console.log(`🚀 Match ${match.id} is LIVE! (Warmup Phase - waiting for players)`);
+            console.log(`[${new Date().toISOString()}] 🚀 Match ${match.contract_match_id} is LIVE! (Warmup Phase - waiting for players)`);
         }
 
     }
@@ -419,7 +419,7 @@ async function checkAutoStart(supabase, escrow) {
 
             // Force-start after 30 seconds
             if (!state.started && elapsed >= WARMUP_COUNTDOWN_MS) {
-                console.log(`   🚦 Match ${match.contract_match_id}: 30s elapsed. Forcing match start!`);
+                console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s warmup elapsed)`);
                 await sendRconCmd('say "Warmup time expired. Starting match!"');
                 await sendRconCmd('css_start');
 
@@ -515,25 +515,52 @@ async function checkForfeits(supabase) {
 }
 
 // ---------------------------------------------------------
-// 6. PAYOUTS
+// 6. PAYOUTS (With Audit Timestamps)
 // ---------------------------------------------------------
 async function processPayouts(supabase, escrow) {
     const { data: matches } = await supabase.from('matches')
         .select('*').eq('status', 'COMPLETE').eq('payout_status', 'PENDING');
 
-    if (!matches) return;
+    if (!matches || matches.length === 0) return;
+
+    console.log(`\n💰 [${new Date().toISOString()}] Processing ${matches.length} payout(s)...`);
 
     for (const match of matches) {
-        console.log(`💰 Paying Match ${match.id}...`);
+        const now = new Date();
+        const matchStarted = match.match_started_at ? new Date(match.match_started_at) : null;
+        const matchCreated = new Date(match.created_at);
+
+        // Calculate elapsed times
+        const timeSinceStart = matchStarted ? Math.round((now - matchStarted) / 1000) : 'N/A';
+        const timeSinceCreated = Math.round((now - matchCreated) / 1000);
+
+        console.log(`\n   ┌─────────────────────────────────────────────────────`);
+        console.log(`   │ 💰 PAYOUT: Match ${match.contract_match_id}`);
+        console.log(`   │ ⏱️  Time Now:          ${now.toISOString()}`);
+        console.log(`   │ 📅 Match Created:     ${match.created_at}`);
+        console.log(`   │ 🎮 Match Started:     ${match.match_started_at || 'N/A'}`);
+        console.log(`   │ ⏳ Elapsed (start):   ${timeSinceStart}s`);
+        console.log(`   │ ⏳ Elapsed (created): ${timeSinceCreated}s`);
+        console.log(`   │ 🏆 Winner:            ${match.winner_address?.slice(0, 10)}...`);
+        console.log(`   └─────────────────────────────────────────────────────`);
+
         try {
             await supabase.from('matches').update({ payout_status: 'PROCESSING' }).eq('id', match.id);
+
+            console.log(`   📤 Sending blockchain transaction...`);
+            const txStart = Date.now();
             const tx = await escrow.distributeWinnings(numericToBytes32(match.contract_match_id), match.winner_address);
-            console.log(`   Tx: ${tx.hash}`);
+            console.log(`   📝 TX Hash: ${tx.hash}`);
+
+            console.log(`   ⏳ Waiting for confirmation...`);
             await tx.wait();
+            const txDuration = Math.round((Date.now() - txStart) / 1000);
+
+            console.log(`   ✅ PAID! (TX took ${txDuration}s)`);
             await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
             await resetServer(supabase, match.id);
         } catch (e) {
-            console.error(`   Payout Failed: ${e.message}`);
+            console.error(`   ❌ Payout Failed: ${e.message}`);
             await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
         }
     }
