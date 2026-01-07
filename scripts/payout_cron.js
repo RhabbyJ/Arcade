@@ -213,17 +213,19 @@ async function checkAutoStart(supabase, escrow) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
             if (!warmupState.has(match.id)) {
-                // FIXED: Just wait 5s for stability, then set time directly.
-                // NO mp_warmup_start or mp_warmup_end! Those trigger config reload.
-                console.log(`   ⏳ Both Connected. Waiting 5s for server stability...`);
+                // Buffer to allow initial loading
+                console.log(`   ⏳ Both Connected. Waiting 5s for stability...`);
                 await new Promise(r => setTimeout(r, 5000));
 
-                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: Forcing 30s Timer (No Restart).`);
+                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: RESTARTING Warmup to 30s.`);
 
-                // Just modify the ACTIVE timer without restarting warmup phase
+                // NOW WE CAN SAFELY USE mp_warmup_start!
+                // Config is neutralized (no mp_warmuptime in warmup.cfg)
                 await sendRcon(server.dathost_id, [
-                    'mp_warmuptime 30',       // Set time directly
-                    'mp_warmup_pausetimer 0', // Ensure it's counting down
+                    'mp_warmup_end',
+                    'mp_warmuptime 30',
+                    'mp_warmup_start',        // This updates the HUD!
+                    'mp_warmup_pausetimer 0',
                     'say "Both players connected! Match starts in 30s..."',
                     'say "Type .ready to skip wait!"'
                 ]);
@@ -342,7 +344,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version C.2 - No Config Reload)");
+    console.log("🤖 Bot Started (Version C.3 - Config Neutralized + Force Start)");
 
     while (true) {
         try {
