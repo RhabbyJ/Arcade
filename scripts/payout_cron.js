@@ -66,7 +66,7 @@ async function sendRcon(dathostId, lines) {
 
     for (const line of lines) {
         try {
-            await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
+            const res = await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Basic ${auth}`,
@@ -74,8 +74,13 @@ async function sendRcon(dathostId, lines) {
                 },
                 body: new URLSearchParams({ line })
             });
+
+            // DEBUG: Check if DatHost accepted the command
+            if (!res.ok) {
+                console.error(`[RCON FAIL] ${line} -> Status: ${res.status} ${res.statusText}`);
+            }
         } catch (e) {
-            console.error("RCON Error:", e.message);
+            console.error("RCON Network Error:", e.message);
         }
     }
 }
@@ -213,18 +218,16 @@ async function checkAutoStart(supabase, escrow) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
             if (!warmupState.has(match.id)) {
-                // Buffer to allow initial loading
                 console.log(`   ⏳ Both Connected. Waiting 5s for stability...`);
                 await new Promise(r => setTimeout(r, 5000));
 
                 console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: RESTARTING Warmup to 30s.`);
 
-                // NOW WE CAN SAFELY USE mp_warmup_start!
-                // Config is neutralized (no mp_warmuptime in warmup.cfg)
+                // Now we send the "Hard Reset" knowing the config won't fight us
                 await sendRcon(server.dathost_id, [
                     'mp_warmup_end',
                     'mp_warmuptime 30',
-                    'mp_warmup_start',        // This updates the HUD!
+                    'mp_warmup_start',
                     'mp_warmup_pausetimer 0',
                     'say "Both players connected! Match starts in 30s..."',
                     'say "Type .ready to skip wait!"'
@@ -344,7 +347,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version C.3 - Config Neutralized + Force Start)");
+    console.log("🤖 Bot Started (Version C.4 - RCON Debugging)");
 
     while (true) {
         try {
