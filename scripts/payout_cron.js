@@ -8,8 +8,10 @@ const fs = require('fs');
 // Load env vars - Try multiple paths
 const envPaths = [
     path.resolve(__dirname, '../.env.local'), // Local Dev
-    path.resolve('/root/base-bot/.env.local'), // VPS Prod
-    path.resolve(process.cwd(), '.env.local')  // Current Dir
+    path.resolve('/root/base-bot/.env.local'), // VPS Prod (.local)
+    path.resolve('/root/base-bot/.env'),       // VPS Prod (standard)
+    path.resolve(process.cwd(), '.env.local'), // Current Dir (.local)
+    path.resolve(process.cwd(), '.env')        // Current Dir (standard)
 ];
 
 let envLoaded = false;
