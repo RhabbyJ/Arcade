@@ -221,14 +221,18 @@ async function checkAutoStart(supabase, escrow) {
                 console.log(`   ⏳ Both Connected. Waiting 5s for stability...`);
                 await new Promise(r => setTimeout(r, 5000));
 
-                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: RESTARTING Warmup to 30s.`);
+                console.log(`[${new Date().toISOString()}] 🔨 Match ${match.contract_match_id}: HAMMERING Warmup to 30s.`);
 
-                // Now we send the "Hard Reset" knowing the config won't fight us
+                // THE "HAMMER" SEQUENCE
+                // 1. End the current broken warmup
+                // 2. Set the variables
+                // 3. Force a fresh start (This updates the HUD)
                 await sendRcon(server.dathost_id, [
-                    'mp_warmup_end',
-                    'mp_warmuptime 30',
-                    'mp_warmup_start',
-                    'mp_warmup_pausetimer 0',
+                    'mp_warmup_end',                          // The Hammer
+                    'mp_warmuptime 30',                       // The Target
+                    'mp_warmuptime_all_players_connected 0',  // Safety
+                    'mp_warmup_start',                        // The Restart
+                    'mp_warmup_pausetimer 0',                 // The Ticker
                     'say "Both players connected! Match starts in 30s..."',
                     'say "Type .ready to skip wait!"'
                 ]);
@@ -347,7 +351,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version C.4 - RCON Debugging)");
+    console.log("🤖 Bot Started (Version C.5 - Hammer)");
 
     while (true) {
         try {
