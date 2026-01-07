@@ -227,13 +227,27 @@ async function assignServers(supabase) {
         // C. Set Match to LIVE
         // Note: We removed 'server_id' column update to avoid errors if column type mismatches.
         // The link is established via game_servers.current_match_id
-        await supabase.from('matches').update({
+        const { error: updateError } = await supabase.from('matches').update({
             status: 'LIVE',
-            match_start_time: new Date().toISOString(),
+            match_started_at: new Date().toISOString(),
             server_assigned_at: new Date().toISOString()
         }).eq('id', match.id);
 
-        console.log(`🚀 Match ${match.id} is LIVE!`);
+        if (updateError) {
+            console.error(`❌ Failed to set match ${match.id} to LIVE:`, updateError.message);
+            // Retry once
+            const { error: retryError } = await supabase.from('matches').update({
+                status: 'LIVE'
+            }).eq('id', match.id);
+            if (retryError) {
+                console.error(`❌ Retry also failed:`, retryError.message);
+            } else {
+                console.log(`✅ Match ${match.id} set to LIVE on retry`);
+            }
+        } else {
+            console.log(`🚀 Match ${match.id} is LIVE!`);
+        }
+
     }
 }
 
