@@ -223,12 +223,12 @@ async function assignServers(supabase) {
         ];
         await sendRcon(server.dathost_id, commands);
 
-        // C. Set Match to LIVE
-        // Note: We removed 'server_id' column update to avoid errors if column type mismatches.
-        // The link is established via game_servers.current_match_id
+        // C. Set Match to LIVE (Warmup Phase)
+        // NOTE: Do NOT set match_started_at here! That's only set when:
+        // - Webhook receives 'going_live' (players typed .ready)
+        // - Bot force-starts via css_start (after 30s countdown)
         const { error: updateError } = await supabase.from('matches').update({
             status: 'LIVE',
-            match_started_at: new Date().toISOString(),
             server_assigned_at: new Date().toISOString()
         }).eq('id', match.id);
 
@@ -244,7 +244,7 @@ async function assignServers(supabase) {
                 console.log(`✅ Match ${match.id} set to LIVE on retry`);
             }
         } else {
-            console.log(`🚀 Match ${match.id} is LIVE!`);
+            console.log(`🚀 Match ${match.id} is LIVE! (Warmup Phase - waiting for players)`);
         }
 
     }
@@ -422,6 +422,12 @@ async function checkAutoStart(supabase, escrow) {
                 console.log(`   🚦 Match ${match.contract_match_id}: 30s elapsed. Forcing match start!`);
                 await sendRconCmd('say "Warmup time expired. Starting match!"');
                 await sendRconCmd('css_start');
+
+                // Mark match as actually started (for webhook protection)
+                await supabase.from('matches').update({
+                    match_started_at: new Date().toISOString()
+                }).eq('id', match.id);
+
                 warmupState.set(match.id, { ...state, started: true });
             }
         }
