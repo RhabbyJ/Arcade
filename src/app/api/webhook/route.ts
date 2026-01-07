@@ -34,6 +34,14 @@ export async function POST(req: Request) {
                 return NextResponse.json({ received: true, status: 'ignored' });
             }
 
+            // CRITICAL: Ignore 0-0 score (warmup end, css_endmatch during setup)
+            // This prevents the "instant payout" bug when bot sends css_endmatch
+            if (team1.score === 0 && team2.score === 0) {
+                console.log('Ignoring round_end: Score is 0-0 (warmup/setup phase)');
+                return NextResponse.json({ received: true, status: 'ignored_warmup' });
+            }
+
+
             let winnerTeam = null;
             let winnerSteamId = null;
 
@@ -51,11 +59,12 @@ export async function POST(req: Request) {
             if (winnerTeam && winnerSteamId) {
                 console.log(`Match ${matchid} finished via round_end. Winner: ${winnerTeam} (${winnerSteamId})`);
 
-                // Find the LIVE match
+                // Find the LIVE match that has actually started
                 const { data: match, error: fetchError } = await supabase
                     .from('matches')
                     .select('*')
                     .eq('status', 'LIVE')
+                    .not('match_started_at', 'is', null)  // Only process if match actually started
                     .order('created_at', { ascending: false })
                     .limit(1)
                     .maybeSingle();
@@ -66,8 +75,8 @@ export async function POST(req: Request) {
                 }
 
                 if (!match) {
-                    console.log('No LIVE match found. It might have already been processed.');
-                    return NextResponse.json({ received: true, status: 'no_live_match' });
+                    console.log('No started LIVE match found. It might be in warmup or already processed.');
+                    return NextResponse.json({ received: true, status: 'no_started_match' });
                 }
 
                 let winnerAddress = null;
