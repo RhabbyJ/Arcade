@@ -138,7 +138,6 @@ async function assignServers(supabase) {
 
         await supabase.from('game_servers').update({ status: 'BUSY', current_match_id: match.id }).eq('id', server.id);
 
-        // Standard clean setup
         await sendRcon(server.dathost_id, [
             'get5_endmatch',
             'css_endmatch',
@@ -146,7 +145,6 @@ async function assignServers(supabase) {
             'exec 1v1.cfg'
         ]);
 
-        // CRITICAL: Do NOT set match_started_at here.
         await supabase.from('matches').update({
             status: 'LIVE',
             server_assigned_at: new Date().toISOString()
@@ -156,10 +154,8 @@ async function assignServers(supabase) {
     }
 }
 
-// THE FIXED AUTO START LOGIC (Hybrid Approach - DB-Based Player Counting)
 async function checkAutoStart(supabase, escrow) {
     const now = Date.now();
-    // Only check matches that are LIVE but NOT started
     const { data: matches } = await supabase
         .from('matches')
         .select('*')
@@ -172,12 +168,9 @@ async function checkAutoStart(supabase, escrow) {
         // 1. Wait for map load (15s buffer)
         if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 15000) continue;
 
-        // 2. Get Server ID
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
-        // 3. Count Players via DATABASE (More reliable than DatHost API)
-        // If disconnect_time is NULL, they are currently connected
         let playerCount = 0;
         if (match.player1_disconnect_time === null) playerCount++;
         if (match.player2_disconnect_time === null) playerCount++;
@@ -206,18 +199,11 @@ async function checkAutoStart(supabase, escrow) {
                 }
 
                 if (elapsed > AFK_TIMEOUT_MS) {
-                    console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout. Cancelling + Refund.`);
-
-                    // Reset Server Logic
+                    console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout.`);
                     await sendRcon(server.dathost_id, ['say "Match Cancelled (AFK)"', 'css_endmatch', 'mp_warmup_end', 'host_workshop_map 3344743064']);
-
-                    // Refund P1
                     await refundPlayer(supabase, escrow, match, match.player1_address);
-
-                    // Update DB
                     await supabase.from('matches').update({ status: 'CANCELLED', payout_status: 'REFUND_PENDING' }).eq('id', match.id);
                     await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
-
                     afkState.delete(match.id);
                 }
             }
@@ -226,17 +212,17 @@ async function checkAutoStart(supabase, escrow) {
 
         // --- 2 PLAYERS (Warmup Director) ---
         if (playerCount >= 2) {
-            // Cancel AFK timer
-            if (afkState.has(match.id)) {
-                console.log(`   👥 Match ${match.contract_match_id}: Both Connected!`);
-                afkState.delete(match.id);
-            }
+            if (afkState.has(match.id)) afkState.delete(match.id);
 
-            // Start Warmup Countdown
             if (!warmupState.has(match.id)) {
+                // *** THE FIX: ADDED 5s BUFFER ***
+                // This prevents the race condition where the bot sends mp_warmuptime 30
+                // before the server finishes processing player_connect, which would reset the timer
+                console.log(`   ⏳ Both Connected. Waiting 5s for server stability...`);
+                await new Promise(r => setTimeout(r, 5000));
+
                 console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: Forcing HUD Update & 30s Timer.`);
 
-                // THE AGGRESSIVE HUD FIX
                 await sendRcon(server.dathost_id, [
                     'mp_warmup_end',          // Force end current state
                     'mp_warmuptime 30',       // Set time
@@ -246,17 +232,13 @@ async function checkAutoStart(supabase, escrow) {
                     'say "Type .ready to skip wait!"'
                 ]);
 
-                warmupState.set(match.id, { start: now, started: false });
+                warmupState.set(match.id, { start: Date.now(), started: false });
             } else {
                 const state = warmupState.get(match.id);
-                // Check if 30s passed
                 if (!state.started && now - state.start > WARMUP_COUNTDOWN_MS) {
                     console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s warmup elapsed)`);
                     await sendRcon(server.dathost_id, ['css_start', 'say "GLHF!"']);
-
-                    // Update DB so we stop checking this match
                     await supabase.from('matches').update({ match_started_at: new Date().toISOString() }).eq('id', match.id);
-
                     state.started = true;
                 }
             }
@@ -293,7 +275,6 @@ async function processPayouts(supabase, escrow) {
         const matchStarted = match.match_started_at ? new Date(match.match_started_at) : null;
         const matchCreated = new Date(match.created_at);
 
-        // Calculate elapsed times
         const timeSinceStart = matchStarted ? Math.round((now - matchStarted) / 1000) : 'N/A';
         const timeSinceCreated = Math.round((now - matchCreated) / 1000);
 
@@ -309,16 +290,12 @@ async function processPayouts(supabase, escrow) {
 
         try {
             await supabase.from('matches').update({ payout_status: 'PROCESSING' }).eq('id', match.id);
-
             console.log(`   📤 Sending blockchain transaction...`);
             const txStart = Date.now();
             const tx = await escrow.distributeWinnings(numericToBytes32(match.contract_match_id), match.winner_address);
             console.log(`   📝 TX Hash: ${tx.hash}`);
-
-            console.log(`   ⏳ Waiting for confirmation...`);
             await tx.wait();
             const txDuration = Math.round((Date.now() - txStart) / 1000);
-
             console.log(`   ✅ PAID! (TX took ${txDuration}s)`);
             await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
             await resetServer(supabase, match.id);
@@ -369,7 +346,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version C - Hybrid Fix + Audit Timestamps)");
+    console.log("🤖 Bot Started (v4 - Stable + 5s Timer Delay)");
 
     while (true) {
         try {
