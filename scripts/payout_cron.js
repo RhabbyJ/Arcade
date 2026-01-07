@@ -3,16 +3,34 @@ const { ethers } = require('ethers');
 const path = require('path');
 const dotenv = require('dotenv');
 
-// Load env vars
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
+const fs = require('fs');
+
+// Load env vars - Try multiple paths
+const envPaths = [
+    path.resolve(__dirname, '../.env.local'), // Local Dev
+    path.resolve('/root/base-bot/.env.local'), // VPS Prod
+    path.resolve(process.cwd(), '.env.local')  // Current Dir
+];
+
+let envLoaded = false;
+for (const p of envPaths) {
+    if (fs.existsSync(p)) {
+        dotenv.config({ path: p });
+        console.log(`Loaded env from: ${p}`);
+        envLoaded = true;
+        break;
+    }
+}
+if (!envLoaded) console.warn("⚠️ No .env.local found! Relying on system process.env");
 
 // Configuration
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL; // Fallback
+const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY; // Fallback
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
 const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const RPC_URL = "https://sepolia.base.org";
 const DATHOST_USER = process.env.DATHOST_USERNAME;
+const DATHOST_PASS = process.env.DATHOST_PASSWORD;
 const DATHOST_PASS = process.env.DATHOST_PASSWORD;
 
 // ABI
