@@ -18,7 +18,6 @@ for (const p of envPaths) {
     }
 }
 
-// Configuration
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
@@ -41,11 +40,10 @@ function numericToBytes32(num) {
 // State Tracking
 const warmupState = new Map();
 const afkState = new Map();
-const WARMUP_COUNTDOWN_MS = 30 * 1000;
+const MAX_WAIT_TIME_MS = 65 * 1000; // 60s config + 5s buffer
 const AFK_TIMEOUT_MS = 2 * 60 * 1000;
 
 // --- HELPERS ---
-
 async function fetchWithTimeout(resource, options = {}) {
     const { timeout = 5000 } = options;
     const controller = new AbortController();
@@ -63,34 +61,21 @@ async function fetchWithTimeout(resource, options = {}) {
 async function sendRcon(dathostId, lines) {
     if (!DATHOST_USER || !DATHOST_PASS) return;
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
-
     for (const line of lines) {
         try {
             await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
                 method: 'POST',
-                headers: {
-                    'Authorization': `Basic ${auth}`,
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
+                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: new URLSearchParams({ line })
             });
-        } catch (e) {
-            console.error("RCON Error:", e.message);
-        }
+        } catch (e) { console.error("RCON Error:", e.message); }
     }
 }
 
 // --- LOGIC ---
-
 async function verifyDeposits(supabase, provider) {
-    const { data: matches } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('status', 'DEPOSITING')
-        .or('p1_deposited.eq.false,p2_deposited.eq.false');
-
+    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'DEPOSITING').or('p1_deposited.eq.false,p2_deposited.eq.false');
     if (!matches) return;
-
     for (const match of matches) {
         if (match.p1_tx_hash && !match.p1_deposited) {
             try {
@@ -99,7 +84,7 @@ async function verifyDeposits(supabase, provider) {
                     console.log(`[${new Date().toISOString()}] ✅ P1 Deposit VERIFIED: Match ${match.contract_match_id}`);
                     await supabase.from('matches').update({ p1_deposited: true }).eq('id', match.id);
                 }
-            } catch (e) { console.error("Tx Check Error:", e.message); }
+            } catch (e) { }
         }
         if (match.p2_tx_hash && !match.p2_deposited) {
             try {
@@ -108,23 +93,15 @@ async function verifyDeposits(supabase, provider) {
                     console.log(`[${new Date().toISOString()}] ✅ P2 Deposit VERIFIED: Match ${match.contract_match_id}`);
                     await supabase.from('matches').update({ p2_deposited: true }).eq('id', match.id);
                 }
-            } catch (e) { console.error("Tx Check Error:", e.message); }
+            } catch (e) { }
         }
     }
 }
 
 async function assignServers(supabase) {
-    const { data: matches } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('status', 'DEPOSITING')
-        .eq('p1_deposited', true)
-        .eq('p2_deposited', true);
-
+    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'DEPOSITING').eq('p1_deposited', true).eq('p2_deposited', true);
     if (!matches || matches.length === 0) return;
-
     const { data: servers } = await supabase.from('game_servers').select('*').eq('status', 'FREE').limit(matches.length);
-
     if (!servers || servers.length === 0) {
         console.log("⚠️ No free servers available.");
         return;
@@ -133,40 +110,22 @@ async function assignServers(supabase) {
     for (let i = 0; i < Math.min(matches.length, servers.length); i++) {
         const match = matches[i];
         const server = servers[i];
-
         console.log(`[${new Date().toISOString()}] 🎮 Assigning Server ${server.name} to Match ${match.contract_match_id}`);
-
         await supabase.from('game_servers').update({ status: 'BUSY', current_match_id: match.id }).eq('id', server.id);
-
-        await sendRcon(server.dathost_id, [
-            'get5_endmatch',
-            'css_endmatch',
-            'host_workshop_map 3344743064',
-            'exec 1v1.cfg'
-        ]);
-
-        await supabase.from('matches').update({
-            status: 'LIVE',
-            server_assigned_at: new Date().toISOString()
-        }).eq('id', match.id);
-
-        console.log(`[${new Date().toISOString()}] 🚀 Match ${match.contract_match_id} is LIVE! (Warmup Phase)`);
+        await sendRcon(server.dathost_id, ['get5_endmatch', 'css_endmatch', 'host_workshop_map 3344743064', 'exec 1v1.cfg']);
+        await supabase.from('matches').update({ status: 'LIVE', server_assigned_at: new Date().toISOString() }).eq('id', match.id);
+        console.log(`[${new Date().toISOString()}] 🚀 Match ${match.contract_match_id} is LIVE! (60s Warmup)`);
     }
 }
 
+// *** STATIC OBSERVER MODE - Trust the config, only intervene if needed ***
 async function checkAutoStart(supabase, escrow) {
     const now = Date.now();
-    const { data: matches } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('status', 'LIVE')
-        .is('match_started_at', null);
-
+    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').is('match_started_at', null);
     if (!matches) return;
 
     for (const match of matches) {
         if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 15000) continue;
-
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
@@ -174,15 +133,16 @@ async function checkAutoStart(supabase, escrow) {
         if (match.player1_disconnect_time === null) playerCount++;
         if (match.player2_disconnect_time === null) playerCount++;
 
-        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players Connected (DB Check)`);
+        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players`);
 
+        // 0 PLAYERS: Reset state
         if (playerCount === 0) {
             warmupState.delete(match.id);
             afkState.delete(match.id);
             continue;
         }
 
-        // --- 1 PLAYER (AFK Logic) ---
+        // 1 PLAYER: AFK Logic
         if (playerCount === 1) {
             warmupState.delete(match.id);
             if (!afkState.has(match.id)) {
@@ -208,42 +168,26 @@ async function checkAutoStart(supabase, escrow) {
             continue;
         }
 
-        // --- 2 PLAYERS (Warmup Director - Active Enforcer) ---
+        // 2 PLAYERS: Passive Observer -> Force Start after 65s
         if (playerCount >= 2) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
-            // Logic: Continuously enforce the timer, don't restart the phase.
+            // Do not RCON hammer the timer. Trust the Config (60s).
+            // Just announce once.
             if (!warmupState.has(match.id)) {
-                console.log(`   ⏳ Both Connected. Waiting 5s for stability...`);
-                await new Promise(r => setTimeout(r, 5000));
-
-                console.log(`[${new Date().toISOString()}] 🎯 Match ${match.contract_match_id}: ACTIVELY SETTING 30s TIMER.`);
-
-                // NO RESTART - JUST MODIFY
-                // We pulse the pause timer to force the HUD to notice the change
-                await sendRcon(server.dathost_id, [
-                    'mp_warmup_pausetimer 1',
-                    'mp_warmuptime 30',
-                    'mp_warmup_pausetimer 0',
-                    'say "Both players connected! Match starts in 30s..."',
-                    'say "Type .ready to skip wait!"'
-                ]);
-
-                warmupState.set(match.id, { start: Date.now(), started: false });
+                console.log(`   ✅ Both Connected. Monitoring for 60s timeout...`);
+                // Announce only. Do not touch mp_warmuptime.
+                await sendRcon(server.dathost_id, ['say "Both players connected! Match auto-starts in 60s (or type .ready)"']);
+                warmupState.set(match.id, { start: now });
             } else {
-                const state = warmupState.get(match.id);
-
-                // ENFORCER: Pulse the timer every 10 seconds to make sure it sticks
-                if (!state.started && (now - state.start) % 10000 < 2000) {
-                    await sendRcon(server.dathost_id, ['mp_warmup_pausetimer 0']);
-                }
-
-                // FORCE START Check
-                if (!state.started && now - state.start > WARMUP_COUNTDOWN_MS) {
-                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: FORCE-START (30s elapsed)`);
-                    await sendRcon(server.dathost_id, ['css_start', 'say "GLHF!"']);
+                const elapsed = now - warmupState.get(match.id).start;
+                // If 65 seconds pass and match hasn't started (via config or .ready), FORCE IT.
+                if (elapsed > MAX_WAIT_TIME_MS) {
+                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: Timeout reached. FORCING START.`);
+                    await sendRcon(server.dathost_id, ['css_start', 'say "Time is up! GLHF!"']);
+                    // We assume it starts now. Update DB to stop this loop.
                     await supabase.from('matches').update({ match_started_at: new Date().toISOString() }).eq('id', match.id);
-                    state.started = true;
+                    warmupState.delete(match.id);
                 }
             }
         }
@@ -350,7 +294,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version D - Active Enforcer)");
+    console.log("🤖 Bot Started (Version E - Static Observer)");
 
     while (true) {
         try {
