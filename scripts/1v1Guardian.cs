@@ -2,13 +2,14 @@ using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
+using System.Linq;
 
 namespace OneVOneGuardian;
 
 public class OneVOneGuardian : BasePlugin
 {
     public override string ModuleName => "1v1 Guardian";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.2";
 
     public override void Load(bool hotReload)
     {
@@ -18,14 +19,13 @@ public class OneVOneGuardian : BasePlugin
             var player = @event.Userid;
             if (player == null || !player.IsValid || player.IsBot) return HookResult.Continue;
 
-            // Simple Logic: 
-            // If CT is empty -> Join CT
-            // If T is empty -> Join T
-            // Else -> Spec
+            // Get human players only
+            var humans = Utilities.GetPlayers().Where(p => p != null && p.IsValid && !p.IsBot && !p.IsHLTV);
             
-            var ctCount = Utilities.GetPlayers().Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist);
-            var tCount = Utilities.GetPlayers().Count(p => p.TeamNum == (byte)CsTeam.Terrorist);
+            var ctCount = humans.Count(p => p.TeamNum == (byte)CsTeam.CounterTerrorist);
+            var tCount = humans.Count(p => p.TeamNum == (byte)CsTeam.Terrorist);
 
+            // Force assignment logic
             if (ctCount == 0)
             {
                 player.ChangeTeam(CsTeam.CounterTerrorist);
@@ -45,7 +45,8 @@ public class OneVOneGuardian : BasePlugin
             return HookResult.Continue;
         });
 
-        // 2. Intercept Chat to block .ready during Live Match
+        // 2. AGGRESSIVE Chat Intercept
+        // This hooks the command before other plugins (like MatchZy) can see it.
         AddCommandListener("say", OnPlayerChat);
         AddCommandListener("say_team", OnPlayerChat);
     }
@@ -54,19 +55,14 @@ public class OneVOneGuardian : BasePlugin
     {
         if (player == null || !player.IsValid) return HookResult.Continue;
 
-        var msg = info.GetArg(1).ToLower();
+        // Get the full message (args start at 1 for say commands)
+        var msg = info.ArgString.Replace("\"", "").Trim().ToLower();
 
-        // Check if message is a trigger
-        if (msg.Contains(".ready") || msg.Contains("!ready"))
+        // Block triggers
+        if (msg == ".ready" || msg == "!ready" || msg.Contains(".ready"))
         {
-            // Check if Match is Live (Not in Warmup)
-            var gameRules = Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules").FirstOrDefault()?.GameRules;
-            if (gameRules != null && !gameRules.WarmupPeriod)
-            {
-                // Match is LIVE. Block the command.
-                player.PrintToChat(" \x02[1v1]\x01 The match is live! .ready is disabled.");
-                return HookResult.Handled; // This stops MatchZy from seeing it
-            }
+            player.PrintToChat(" \x02[1v1]\x01 Match is auto-start only. Please wait for the timer!");
+            return HookResult.Handled; // STOP MatchZy from seeing this
         }
 
         return HookResult.Continue;
