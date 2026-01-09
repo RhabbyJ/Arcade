@@ -18,6 +18,7 @@ for (const p of envPaths) {
     }
 }
 
+// Config
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
@@ -37,42 +38,49 @@ function numericToBytes32(num) {
     return '0x' + hex.padStart(64, '0');
 }
 
-// State Tracking
+// State
 const warmupState = new Map();
 const afkState = new Map();
-const MAX_WAIT_TIME_MS = 65 * 1000; // 60s config + 5s buffer
-const AFK_TIMEOUT_MS = 2 * 60 * 1000;
+const AFK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes to show up
 
 // --- HELPERS ---
-async function fetchWithTimeout(resource, options = {}) {
-    const { timeout = 5000 } = options;
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
+
+// Updated: Now returns the response text so we can parse it
+async function sendRcon(dathostId, command) {
+    if (!DATHOST_USER || !DATHOST_PASS) return null;
+    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+
     try {
-        const response = await fetch(resource, { ...options, signal: controller.signal });
-        clearTimeout(id);
-        return response;
-    } catch (error) {
-        clearTimeout(id);
-        throw error;
+        const response = await fetch(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams({ line: command })
+        });
+        // DatHost API returns the console output directly in the body
+        return await response.text();
+    } catch (e) {
+        console.error("RCON Error:", e.message);
+        return null;
     }
 }
 
-async function sendRcon(dathostId, lines) {
-    if (!DATHOST_USER || !DATHOST_PASS) return;
-    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
-    for (const line of lines) {
-        try {
-            await fetchWithTimeout(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
-                method: 'POST',
-                headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({ line })
-            });
-        } catch (e) { console.error("RCON Error:", e.message); }
-    }
+async function getRealPlayerCount(dathostId) {
+    // We send 'status' and count the lines that look like human players
+    const output = await sendRcon(dathostId, 'status');
+    if (!output) return 0;
+
+    // CS2 Status Output Regex for humans: 
+    // Matches lines like: # 5 "Name" [U:1:12345] ...
+    // Excludes GOTV/SourceTV/Bots usually
+    const matches = output.match(/#\s+\d+\s+".*?"\s+\[U:\d+:\d+\]/g);
+    return matches ? matches.length : 0;
 }
 
 // --- LOGIC ---
+
 async function verifyDeposits(supabase, provider) {
     const { data: matches } = await supabase.from('matches').select('*').eq('status', 'DEPOSITING').or('p1_deposited.eq.false,p2_deposited.eq.false');
     if (!matches) return;
@@ -112,41 +120,42 @@ async function assignServers(supabase) {
         const server = servers[i];
         console.log(`[${new Date().toISOString()}] 🎮 Assigning Server ${server.name} to Match ${match.contract_match_id}`);
         await supabase.from('game_servers').update({ status: 'BUSY', current_match_id: match.id }).eq('id', server.id);
-        await sendRcon(server.dathost_id, ['get5_endmatch', 'css_endmatch', 'host_workshop_map 3344743064', 'exec 1v1.cfg']);
+
+        // Initial setup
+        await sendRcon(server.dathost_id, 'get5_endmatch');
+        await sendRcon(server.dathost_id, 'css_endmatch');
+        await sendRcon(server.dathost_id, 'host_workshop_map 3344743064');
+
+        // We rely on MatchZy's auto-exec configs now, but we exec warmup once to be safe
+        await sendRcon(server.dathost_id, 'exec MatchZy/warmup.cfg');
+
         await supabase.from('matches').update({ status: 'LIVE', server_assigned_at: new Date().toISOString() }).eq('id', match.id);
         console.log(`[${new Date().toISOString()}] 🚀 Match ${match.contract_match_id} is LIVE! (60s Warmup)`);
     }
 }
 
-// *** STATIC OBSERVER MODE - Trust the config, only intervene if needed ***
+// *** THE NEW OBSERVER LOGIC - SOURCE OF TRUTH ***
 async function checkAutoStart(supabase, escrow) {
     const now = Date.now();
     const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').is('match_started_at', null);
     if (!matches) return;
 
     for (const match of matches) {
-        if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 15000) continue;
+        if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 10000) continue;
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
-        let playerCount = 0;
-        if (match.player1_disconnect_time === null) playerCount++;
-        if (match.player2_disconnect_time === null) playerCount++;
+        // SOURCE OF TRUTH: Ask the server, don't trust the DB/Webhooks for this state
+        const playerCount = await getRealPlayerCount(server.dathost_id);
 
-        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players`);
+        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players (Server Verified)`);
 
-        // 0 PLAYERS: Reset state
-        if (playerCount === 0) {
-            warmupState.delete(match.id);
-            afkState.delete(match.id);
-            continue;
-        }
+        // 1. SOMEONE LEFT / EMPTY
+        if (playerCount < 2) {
+            warmupState.delete(match.id); // Cancel any start timers
 
-        // 1 PLAYER: AFK Logic
-        if (playerCount === 1) {
-            warmupState.delete(match.id);
             if (!afkState.has(match.id)) {
-                console.log(`   👤 Match ${match.contract_match_id}: P1 waiting. Starting 2-min AFK timer.`);
+                console.log(`   👤 Match ${match.contract_match_id}: Waiting for players. Starting AFK timer.`);
                 afkState.set(match.id, { start: now });
             } else {
                 const elapsed = now - afkState.get(match.id).start;
@@ -156,9 +165,11 @@ async function checkAutoStart(supabase, escrow) {
                     console.log(`   ⏳ Match ${match.contract_match_id}: ${Math.ceil(remaining / 1000)}s until AFK cancel`);
                 }
 
+                // If they are gone for > 2 mins, cancel match
                 if (elapsed > AFK_TIMEOUT_MS) {
                     console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout.`);
-                    await sendRcon(server.dathost_id, ['say "Match Cancelled (AFK)"', 'css_endmatch', 'host_workshop_map 3344743064']);
+                    await sendRcon(server.dathost_id, 'say "Match Cancelled (AFK)"');
+                    await sendRcon(server.dathost_id, 'css_endmatch');
                     await refundPlayer(supabase, escrow, match, match.player1_address);
                     await supabase.from('matches').update({ status: 'CANCELLED', payout_status: 'REFUND_PENDING' }).eq('id', match.id);
                     await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
@@ -168,24 +179,20 @@ async function checkAutoStart(supabase, escrow) {
             continue;
         }
 
-        // 2 PLAYERS: Passive Observer -> Force Start after 65s
+        // 2. BOTH CONNECTED
         if (playerCount >= 2) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
-            // Do not RCON hammer the timer. Trust the Config (60s).
-            // Just announce once.
+            // The server config (60s timer) is the boss. We just watch.
             if (!warmupState.has(match.id)) {
-                console.log(`   ✅ Both Connected. Monitoring for 60s timeout...`);
-                // Announce only. Do not touch mp_warmuptime.
-                await sendRcon(server.dathost_id, ['say "Both players connected! Match auto-starts in 60s (or type .ready)"']);
+                console.log(`   ✅ Both Connected. Config timer should be running...`);
                 warmupState.set(match.id, { start: now });
             } else {
+                // Failsafe: If 75s pass and match hasn't started (e.g. config failed), force it.
                 const elapsed = now - warmupState.get(match.id).start;
-                // If 65 seconds pass and match hasn't started (via config or .ready), FORCE IT.
-                if (elapsed > MAX_WAIT_TIME_MS) {
-                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: Timeout reached. FORCING START.`);
-                    await sendRcon(server.dathost_id, ['css_start', 'say "Time is up! GLHF!"']);
-                    // We assume it starts now. Update DB to stop this loop.
+                if (elapsed > 75000) {
+                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: Stuck in Warmup. FORCING START.`);
+                    await sendRcon(server.dathost_id, 'css_start');
                     await supabase.from('matches').update({ match_started_at: new Date().toISOString() }).eq('id', match.id);
                     warmupState.delete(match.id);
                 }
@@ -280,7 +287,8 @@ async function resetServer(supabase, matchId) {
     const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', matchId).single();
     if (server) {
         console.log(`   🔄 Resetting Server ${server.name}`);
-        await sendRcon(server.dathost_id, ['css_endmatch', 'host_workshop_map 3344743064']);
+        await sendRcon(server.dathost_id, 'css_endmatch');
+        await sendRcon(server.dathost_id, 'host_workshop_map 3344743064');
         await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
     }
     warmupState.delete(matchId);
@@ -294,7 +302,7 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version E - Static Observer)");
+    console.log("🤖 Bot Started (Version F - Ultimate Architecture)");
 
     while (true) {
         try {
