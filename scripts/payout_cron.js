@@ -66,7 +66,7 @@ async function sendRcon(dathostId, command) {
     }
 }
 
-// IMPROVEMENT #1: Use DatHost status_json instead of parsing 'status' output
+// Use DatHost API for player count (simple, reliable)
 async function getRealPlayerCount(dathostId) {
     if (!DATHOST_USER || !DATHOST_PASS) return 0;
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
@@ -78,15 +78,14 @@ async function getRealPlayerCount(dathostId) {
         });
 
         if (!res.ok) {
-            console.error(`status_json failed: ${res.status} ${res.statusText}`);
+            console.error(`DatHost API failed: ${res.status} ${res.statusText}`);
             return 0;
         }
 
         const json = await res.json();
-        // DatHost returns players_online directly
         return json.players_online || 0;
     } catch (e) {
-        console.error("status_json error:", e.message);
+        console.error("DatHost API error:", e.message);
         return 0;
     }
 }
@@ -143,7 +142,7 @@ async function assignServers(supabase) {
     }
 }
 
-// OBSERVER + FAILSAFE (uses server truth)
+// PHASE A: Pre-match warmup monitoring (cancel + refund if AFK)
 async function checkAutoStart(supabase, escrow) {
     const now = Date.now();
     const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').is('match_started_at', null);
@@ -154,11 +153,10 @@ async function checkAutoStart(supabase, escrow) {
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
-        // SOURCE OF TRUTH: DatHost API
         const playerCount = await getRealPlayerCount(server.dathost_id);
-        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players (Server Verified)`);
+        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players (Warmup Phase)`);
 
-        // 1. NOT ENOUGH PLAYERS
+        // NOT ENOUGH PLAYERS during warmup
         if (playerCount < 2) {
             warmupState.delete(match.id);
 
@@ -169,13 +167,10 @@ async function checkAutoStart(supabase, escrow) {
                 const elapsed = now - afkState.get(match.id).start;
 
                 if (elapsed > AFK_TIMEOUT_MS) {
-                    console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout.`);
+                    console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout (Warmup).`);
                     await sendRcon(server.dathost_id, 'say "Match Cancelled (AFK)"');
                     await sendRcon(server.dathost_id, 'css_endmatch');
-
-                    // IMPROVEMENT #5: Refund BOTH players
                     await refundBothPlayers(supabase, escrow, match);
-
                     await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', match.id);
                     await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
                     afkState.delete(match.id);
@@ -184,7 +179,7 @@ async function checkAutoStart(supabase, escrow) {
             continue;
         }
 
-        // 2. BOTH CONNECTED
+        // BOTH CONNECTED
         if (playerCount >= 2) {
             if (afkState.has(match.id)) afkState.delete(match.id);
 
@@ -204,7 +199,7 @@ async function checkAutoStart(supabase, escrow) {
     }
 }
 
-// IMPROVEMENT #2: Forfeits use SERVER TRUTH, not DB disconnect timestamps
+// PHASE B: Post-start forfeit monitoring (cancel + refund if player leaves)
 async function checkForfeits(supabase, escrow) {
     const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').not('match_started_at', 'is', null);
     if (!matches) return;
@@ -215,10 +210,9 @@ async function checkForfeits(supabase, escrow) {
         const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
         if (!server) continue;
 
-        // Ask the server how many players are actually there
         const playerCount = await getRealPlayerCount(server.dathost_id);
 
-        // If only 1 player during LIVE match, track for forfeit
+        // If <2 players during LIVE match
         if (playerCount < 2) {
             if (!afkState.has(`forfeit_${match.id}`)) {
                 console.log(`   ⚠️ Match ${match.contract_match_id}: Only ${playerCount} player(s) during LIVE. Starting forfeit timer.`);
@@ -228,8 +222,8 @@ async function checkForfeits(supabase, escrow) {
 
                 if (elapsed > FORFEIT_TIMEOUT_MS) {
                     console.log(`[${new Date().toISOString()}] 🚨 Match ${match.contract_match_id}: Forfeit (player left for 5min).`);
-
-                    // We don't know WHO left without more info, so cancel and refund
+                    // Without knowing WHO left, we cancel + refund (safe behavior)
+                    // Webhook is the authoritative source for winner
                     await sendRcon(server.dathost_id, 'say "Match Cancelled (Forfeit)"');
                     await sendRcon(server.dathost_id, 'css_endmatch');
                     await refundBothPlayers(supabase, escrow, match);
@@ -245,7 +239,63 @@ async function checkForfeits(supabase, escrow) {
     }
 }
 
-// IMPROVEMENT #3: On-chain idempotency check before paying
+// FIX #4: Reconcile stuck PROCESSING payouts on startup/loop
+async function reconcileStuckPayouts(supabase, escrow, provider) {
+    const { data: matches } = await supabase.from('matches').select('*').eq('payout_status', 'PROCESSING');
+    if (!matches || matches.length === 0) return;
+
+    console.log(`🔄 Reconciling ${matches.length} stuck PROCESSING payout(s)...`);
+
+    for (const match of matches) {
+        const matchIdBytes = numericToBytes32(match.contract_match_id);
+
+        try {
+            // Check on-chain state
+            const onchain = await escrow.matches(matchIdBytes);
+            const isComplete = onchain[3];
+
+            if (isComplete) {
+                console.log(`   ✅ Match ${match.contract_match_id}: Already paid on-chain. Marking PAID.`);
+                await supabase.from('matches').update({
+                    payout_status: 'PAID',
+                    payout_note: 'Reconciled from PROCESSING'
+                }).eq('id', match.id);
+                await resetServer(supabase, match.id);
+                continue;
+            }
+
+            // If we have a TX hash, check its status
+            if (match.payout_tx_hash) {
+                try {
+                    const receipt = await provider.getTransactionReceipt(match.payout_tx_hash);
+                    if (receipt) {
+                        if (receipt.status === 1) {
+                            console.log(`   ✅ Match ${match.contract_match_id}: TX confirmed. Marking PAID.`);
+                            await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
+                            await resetServer(supabase, match.id);
+                        } else {
+                            console.log(`   ❌ Match ${match.contract_match_id}: TX reverted. Marking FAILED.`);
+                            await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
+                        }
+                        continue;
+                    }
+                    // TX pending - leave as PROCESSING
+                    console.log(`   ⏳ Match ${match.contract_match_id}: TX still pending.`);
+                } catch (e) {
+                    console.error(`   ⚠️ TX check error: ${e.message}`);
+                }
+            } else {
+                // No TX hash = never actually sent, revert to PENDING
+                console.log(`   🔄 Match ${match.contract_match_id}: No TX hash. Reverting to PENDING.`);
+                await supabase.from('matches').update({ payout_status: 'PENDING' }).eq('id', match.id);
+            }
+        } catch (e) {
+            console.error(`   ❌ Reconcile error for ${match.contract_match_id}: ${e.message}`);
+        }
+    }
+}
+
+// Improved payout logic with proper state machine
 async function processPayouts(supabase, escrow) {
     const { data: matches } = await supabase.from('matches').select('*').eq('status', 'COMPLETE').eq('payout_status', 'PENDING');
     if (!matches || matches.length === 0) return;
@@ -259,7 +309,7 @@ async function processPayouts(supabase, escrow) {
             // CHECK ON-CHAIN STATE FIRST (idempotency)
             const matchIdBytes = numericToBytes32(match.contract_match_id);
             const onchain = await escrow.matches(matchIdBytes);
-            const isComplete = onchain[3]; // isComplete is index 3
+            const isComplete = onchain[3];
 
             if (isComplete) {
                 console.log(`   ⏭️ Already paid on-chain. Updating DB.`);
@@ -271,17 +321,20 @@ async function processPayouts(supabase, escrow) {
                 continue;
             }
 
-            // Store TX hash BEFORE sending (for crash recovery)
-            await supabase.from('matches').update({ payout_status: 'PROCESSING' }).eq('id', match.id);
-
             console.log(`   📤 Sending blockchain transaction...`);
             const txStart = Date.now();
+
+            // Send TX and get hash
             const tx = await escrow.distributeWinnings(matchIdBytes, match.winner_address);
 
-            // Store TX hash immediately
-            await supabase.from('matches').update({ payout_tx_hash: tx.hash }).eq('id', match.id);
+            // FIX #4: Store TX hash IMMEDIATELY after broadcast (before wait)
+            await supabase.from('matches').update({
+                payout_status: 'PROCESSING',
+                payout_tx_hash: tx.hash
+            }).eq('id', match.id);
             console.log(`   📝 TX Hash: ${tx.hash}`);
 
+            // Wait for confirmation
             await tx.wait();
             const txDuration = Math.round((Date.now() - txStart) / 1000);
             console.log(`   ✅ PAID! (TX took ${txDuration}s)`);
@@ -290,12 +343,18 @@ async function processPayouts(supabase, escrow) {
             await resetServer(supabase, match.id);
         } catch (e) {
             console.error(`   ❌ Payout Failed: ${e.message}`);
-            await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
+            // FIX #5: Only mark FAILED if no TX hash (definitive failure)
+            // If we have a TX hash, leave as PROCESSING for reconciliation
+            const { data: current } = await supabase.from('matches').select('payout_tx_hash').eq('id', match.id).single();
+            if (!current?.payout_tx_hash) {
+                await supabase.from('matches').update({ payout_status: 'PENDING' }).eq('id', match.id);
+            }
+            // If TX hash exists, reconciler will handle it
         }
     }
 }
 
-// IMPROVEMENT #5: Refund BOTH players
+// Refund BOTH players
 async function refundBothPlayers(supabase, escrow, match) {
     const matchIdBytes = numericToBytes32(match.contract_match_id);
 
@@ -360,7 +419,10 @@ async function main() {
     const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
     const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    console.log("🤖 Bot Started (Version G - Best Practices)");
+    console.log("🤖 Bot Started (Version H - Complete Fixes)");
+
+    // FIX #4: Reconcile any stuck PROCESSING payouts on startup
+    await reconcileStuckPayouts(supabase, escrow, provider);
 
     while (true) {
         try {
@@ -368,6 +430,7 @@ async function main() {
             await assignServers(supabase);
             await checkAutoStart(supabase, escrow);
             await checkForfeits(supabase, escrow);
+            await reconcileStuckPayouts(supabase, escrow, provider); // Also check in loop
             await processPayouts(supabase, escrow);
         } catch (e) {
             console.error("Loop Error:", e);
