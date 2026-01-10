@@ -113,7 +113,7 @@ async function reconcileSettlement(match: any): Promise<{ done: boolean; reason:
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
     try {
         const [, , pot, isComplete, isActive, winner] = await escrow.getMatch(matchIdBytes32);
-        if (isComplete && !isActive && pot === 0n) {
+        if (isComplete && !isActive && pot === BigInt(0)) {
             if (winner !== ethers.ZeroAddress) {
                 await supabase.from("matches").update({
                     status: "COMPLETE",

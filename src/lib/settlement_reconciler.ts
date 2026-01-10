@@ -69,7 +69,7 @@ export async function reconcileSettlement(match: any): Promise<ReconcileResult> 
         // With updated contract:
         // - payout: isComplete=true, isActive=false, pot=0, winner!=0
         // - refund complete: isComplete=true, isActive=false, pot=0, winner==0
-        if (isComplete && !isActive && pot === 0n) {
+        if (isComplete && !isActive && pot === BigInt(0)) {
             if (winner !== ethers.ZeroAddress) {
                 await supabaseAdmin.from("matches").update({
                     status: "COMPLETE",
@@ -104,7 +104,7 @@ export async function isAlreadySettled(contractMatchId: string | number): Promis
     try {
         const matchIdBytes32 = numericToBytes32(contractMatchId);
         const [, , pot, isComplete, isActive] = await escrow.getMatch(matchIdBytes32);
-        return isComplete && !isActive && pot === 0n;
+        return isComplete && !isActive && pot === BigInt(0);
     } catch {
         return false;
     }
