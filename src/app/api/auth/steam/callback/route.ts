@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import openid from 'openid';
 import { cookies } from 'next/headers';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { randomBytes } from 'crypto';
 
 export async function GET(req: Request): Promise<Response> {
@@ -59,13 +59,13 @@ export async function GET(req: Request): Promise<Response> {
                 const sessionToken = randomBytes(32).toString('hex');
 
                 // 3. Delete any existing sessions for this wallet (single session per wallet)
-                await supabase
+                await supabaseAdmin
                     .from('sessions')
                     .delete()
                     .eq('wallet_address', walletAddress);
 
                 // 4. Create new session in database
-                const { error: sessionError } = await supabase
+                const { error: sessionError } = await supabaseAdmin
                     .from('sessions')
                     .insert({
                         wallet_address: walletAddress,
@@ -82,7 +82,7 @@ export async function GET(req: Request): Promise<Response> {
                 }
 
                 // 5. Soft-update user's preferred Steam (optional, for profile display)
-                await supabase.rpc('link_steam_account', {
+                await supabaseAdmin.rpc('link_steam_account', {
                     p_wallet_address: walletAddress,
                     p_steam_id: steamId,
                     p_steam_name: steamName,
