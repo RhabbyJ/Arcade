@@ -1,6 +1,6 @@
 
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { ethers } from 'ethers';
 
 const ESCROW_ABI = [
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
                 console.log(`Match ${matchid} finished via round_end. Winner: ${winnerTeam} (${winnerSteamId})`);
 
                 // Find the LIVE match that has actually started
-                const { data: match, error: fetchError } = await supabase
+                const { data: match, error: fetchError } = await supabaseAdmin
                     .from('matches')
                     .select('*')
                     .eq('status', 'LIVE')
@@ -106,7 +106,7 @@ export async function POST(req: Request) {
                     // The 'payout_cron.ts' script will pick this up and handle the blockchain TX safely.
                     console.log('Match complete. Payout queued for worker script.');
 
-                    const { error: updateError } = await supabase
+                    const { error: updateError } = await supabaseAdmin
                         .from('matches')
                         .update({
                             status: 'COMPLETE',
@@ -122,7 +122,7 @@ export async function POST(req: Request) {
                     console.log(`Match ${match.id} marked COMPLETE. Winner: ${winnerAddress}`);
 
                     // NEW: Find the Assigned Server
-                    const { data: assignedServer } = await supabase
+                    const { data: assignedServer } = await supabaseAdmin
                         .from('game_servers')
                         .select('*')
                         .eq('current_match_id', match.id)
@@ -171,7 +171,7 @@ export async function POST(req: Request) {
 
                     // NEW: Free the Server (After kicking/resetting)
                     if (assignedServer) {
-                        const { error: freeError } = await supabase
+                        const { error: freeError } = await supabaseAdmin
                             .from('game_servers')
                             .update({
                                 status: 'FREE',
@@ -201,7 +201,7 @@ export async function POST(req: Request) {
             console.log(`Match going_live: MatchZy ID ${matchid}`);
 
             // Find the LIVE match and set match_started_at
-            const { data: match, error } = await supabase
+            const { data: match, error } = await supabaseAdmin
                 .from('matches')
                 .select('id')
                 .eq('status', 'LIVE')
@@ -211,7 +211,7 @@ export async function POST(req: Request) {
                 .maybeSingle();
 
             if (match && !error) {
-                await supabase
+                await supabaseAdmin
                     .from('matches')
                     .update({ match_started_at: new Date().toISOString() })
                     .eq('id', match.id);
@@ -230,7 +230,7 @@ export async function POST(req: Request) {
 
             // Update DB: Set disconnect timestamp
             // We find the match and verify which player it is
-            const { data: match } = await supabase
+            const { data: match } = await supabaseAdmin
                 .from('matches')
                 .select('*')
                 .eq('contract_match_id', matchid) // Assuming payload uses numeric ID? Or check 'id' vs 'contract_match_id'
@@ -244,7 +244,7 @@ export async function POST(req: Request) {
                 const isP1 = match.player1_steam === player.steamid;
                 const updateCol = isP1 ? 'player1_disconnect_time' : 'player2_disconnect_time';
 
-                await supabase
+                await supabaseAdmin
                     .from('matches')
                     .update({ [updateCol]: new Date().toISOString() })
                     .eq('id', match.id);
@@ -262,7 +262,7 @@ export async function POST(req: Request) {
             console.log(`Player Connect: ${player.name} (${player.steamid})`);
 
             // Update DB: usage of NULL to indicate "Connected"
-            const { data: match } = await supabase
+            const { data: match } = await supabaseAdmin
                 .from('matches')
                 .select('*')
                 .eq('status', 'LIVE')
@@ -273,7 +273,7 @@ export async function POST(req: Request) {
                 const isP1 = match.player1_steam === player.steamid;
                 const updateCol = isP1 ? 'player1_disconnect_time' : 'player2_disconnect_time';
 
-                await supabase
+                await supabaseAdmin
                     .from('matches')
                     .update({ [updateCol]: null })
                     .eq('id', match.id);

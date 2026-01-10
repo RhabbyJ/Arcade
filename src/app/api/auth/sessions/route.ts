@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Validate session against database
-    const { data: session, error } = await supabase
+    const { data: session, error } = await supabaseAdmin
         .from('sessions')
         .select('*')
         .eq('session_token', sessionToken)
@@ -53,7 +53,7 @@ export async function DELETE(req: NextRequest) {
 
     if (sessionToken) {
         // Delete session from database
-        await supabase
+        await supabaseAdmin
             .from('sessions')
             .delete()
             .eq('session_token', sessionToken);

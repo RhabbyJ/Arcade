@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Build query - if wallet is provided, validate against it
-    let query = supabase
+    let query = supabaseAdmin
         .from('sessions')
         .select('*')
         .eq('session_token', sessionToken)

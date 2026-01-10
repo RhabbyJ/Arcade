@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { ethers } from 'ethers';
 import { maybeStartDatHostMatch } from '@/lib/maybeStartDatHostMatch';
 
@@ -9,11 +9,6 @@ import { maybeStartDatHostMatch } from '@/lib/maybeStartDatHostMatch';
  * Saves the tx_hash to DB, verifies on-chain, and triggers DatHost match
  * when both deposits are verified.
  */
-
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
 
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || "https://sepolia.base.org");
 
@@ -78,7 +73,7 @@ export async function POST(req: NextRequest) {
         }
 
         // 1. Fetch the match
-        const { data: match, error: fetchError } = await supabase
+        const { data: match, error: fetchError } = await supabaseAdmin
             .from('matches')
             .select('*')
             .eq('id', matchId)
@@ -113,7 +108,7 @@ export async function POST(req: NextRequest) {
 
         // 5. Save tx_hash first
         const isFirstDeposit = match.status !== 'DEPOSITING';
-        await supabase
+        await supabaseAdmin
             .from('matches')
             .update({
                 [txField]: txHash,
@@ -139,7 +134,7 @@ export async function POST(req: NextRequest) {
         }
 
         // 7. Mark as verified
-        await supabase
+        await supabaseAdmin
             .from('matches')
             .update({ [verifiedField]: true })
             .eq('id', matchId);
