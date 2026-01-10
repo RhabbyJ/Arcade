@@ -12,9 +12,8 @@ contract EscrowV2 is Ownable {
     address public bot;          // Automated server (Hot Wallet)
 
     // --- CONFIG ---
-    // Using Basis Points (100 = 1%). Default 10% = 1000.
     uint256 public rakeBps = 1000; 
-    uint256 public constant MAX_RAKE_BPS = 2000; // Cap at 20%
+    uint256 public constant MAX_RAKE_BPS = 2000;
 
     // --- STATE ---
     struct Match {
@@ -23,23 +22,28 @@ contract EscrowV2 is Ownable {
         uint256 pot;
         bool isComplete;
         bool isActive;
+        address winner; // Track winner on-chain for reconciliation
     }
-    // bytes32 supports UUID hashing from database
+
     mapping(bytes32 => Match) public matches;
 
+    // Per-player deposit tracking (enables correct refunds)
+    mapping(bytes32 => mapping(address => uint256)) public deposited;
+
+    // Expected players for gated deposits (optional security)
+    mapping(bytes32 => address) public expectedPlayer1;
+    mapping(bytes32 => address) public expectedPlayer2;
+
     // --- EVENTS ---
+    event MatchCreated(bytes32 indexed matchId, address player1, address player2);
     event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount);
     event Payout(bytes32 indexed matchId, address indexed winner, uint256 prize, uint256 fee);
     event Refund(bytes32 indexed matchId, address indexed player, uint256 amount);
     event TreasuryUpdated(address newTreasury);
     event BotUpdated(address newBot);
     event RakeUpdated(uint256 newRakeBps);
-    
-    constructor(
-        address _usdc, 
-        address _treasury, 
-        address _bot
-    ) Ownable(msg.sender) {
+
+    constructor(address _usdc, address _treasury, address _bot) Ownable(msg.sender) {
         usdc = IERC20(_usdc);
         treasury = _treasury;
         bot = _bot;
@@ -58,6 +62,7 @@ contract EscrowV2 is Ownable {
     }
 
     function setBot(address _bot) external onlyOwner {
+        require(_bot != address(0), "Invalid Address");
         bot = _bot;
         emit BotUpdated(_bot);
     }
@@ -68,6 +73,19 @@ contract EscrowV2 is Ownable {
         emit RakeUpdated(_bps);
     }
 
+    // --- MATCH CREATION (Gated Deposits) ---
+    // Call this BEFORE players deposit to restrict who can join
+    function createMatch(bytes32 matchId, address p1, address p2) external onlyBot {
+        require(expectedPlayer1[matchId] == address(0), "Match already created");
+        require(p1 != address(0) && p2 != address(0), "Invalid players");
+        require(p1 != p2, "Players must be different");
+        
+        expectedPlayer1[matchId] = p1;
+        expectedPlayer2[matchId] = p2;
+        
+        emit MatchCreated(matchId, p1, p2);
+    }
+
     // --- CORE LOGIC ---
 
     function deposit(bytes32 matchId, uint256 amount) external {
@@ -75,14 +93,31 @@ contract EscrowV2 is Ownable {
         require(usdc.transferFrom(msg.sender, address(this), amount), "Transfer failed");
 
         Match storage m = matches[matchId];
-        
+
+        // Prevent deposits into completed matches
+        require(!m.isComplete, "Match complete");
+
+        // If match was created with expected players, enforce gating
+        if (expectedPlayer1[matchId] != address(0)) {
+            require(
+                msg.sender == expectedPlayer1[matchId] || msg.sender == expectedPlayer2[matchId],
+                "Not an expected player"
+            );
+        }
+
         // Auto-assign player slots
         if (m.player1 == address(0)) {
             m.player1 = msg.sender;
         } else if (m.player2 == address(0)) {
+            require(msg.sender != m.player1, "Already joined");
             m.player2 = msg.sender;
+        } else {
+            // Once both slots filled, only those players can add more
+            require(msg.sender == m.player1 || msg.sender == m.player2, "Not a match player");
         }
 
+        // Track per-player deposits for correct refunds
+        deposited[matchId][msg.sender] += amount;
         m.pot += amount;
         m.isActive = true;
 
@@ -94,21 +129,26 @@ contract EscrowV2 is Ownable {
         require(m.isActive, "Match not active");
         require(m.pot > 0, "Pot empty");
         require(!m.isComplete, "Already paid");
+        require(winner == m.player1 || winner == m.player2, "Winner not in match");
 
-        // Calculate Fees (Basis Points)
-        uint256 fee = (m.pot * rakeBps) / 10000;
-        uint256 prize = m.pot - fee;
+        uint256 totalPot = m.pot;
 
+        // Calculate Fees
+        uint256 fee = (totalPot * rakeBps) / 10000;
+        uint256 prize = totalPot - fee;
+
+        // Make on-chain state unambiguous for reconciliation
+        m.pot = 0;
         m.isComplete = true;
         m.isActive = false;
-        
-        // 1. Pay Winner
+        m.winner = winner;
+
+        // Clear individual deposit records
+        deposited[matchId][m.player1] = 0;
+        deposited[matchId][m.player2] = 0;
+
         require(usdc.transfer(winner, prize), "Prize transfer failed");
-        
-        // 2. Pay Treasury Directly (no accumulation = less attack surface)
-        if (fee > 0) {
-            require(usdc.transfer(treasury, fee), "Fee transfer failed");
-        }
+        if (fee > 0) require(usdc.transfer(treasury, fee), "Fee transfer failed");
 
         emit Payout(matchId, winner, prize, fee);
     }
@@ -117,14 +157,21 @@ contract EscrowV2 is Ownable {
         Match storage m = matches[matchId];
         require(m.isActive, "Match not active");
         require(!m.isComplete, "Already complete");
-        
-        uint256 amount = m.pot;
-        m.pot = 0;
-        m.isActive = false;
-        m.isComplete = true;
+        require(player == m.player1 || player == m.player2, "Not a match player");
+
+        uint256 amount = deposited[matchId][player];
+        require(amount > 0, "Nothing to refund");
+
+        deposited[matchId][player] = 0;
+        m.pot -= amount;
+
+        // Only mark complete when pot fully drained (both refunded)
+        if (m.pot == 0) {
+            m.isActive = false;
+            m.isComplete = true;
+        }
 
         require(usdc.transfer(player, amount), "Refund failed");
-
         emit Refund(matchId, player, amount);
     }
 
@@ -134,9 +181,14 @@ contract EscrowV2 is Ownable {
         address player2,
         uint256 pot,
         bool isComplete,
-        bool isActive
+        bool isActive,
+        address winner
     ) {
         Match storage m = matches[matchId];
-        return (m.player1, m.player2, m.pot, m.isComplete, m.isActive);
+        return (m.player1, m.player2, m.pot, m.isComplete, m.isActive, m.winner);
+    }
+
+    function getDeposited(bytes32 matchId, address player) external view returns (uint256) {
+        return deposited[matchId][player];
     }
 }

@@ -6,6 +6,7 @@ export const USDC_ABI = [
 
 export const ESCROW_ABI = [
     // Core Functions (bytes32 for UUID support)
+    "function createMatch(bytes32 matchId, address p1, address p2) external",
     "function deposit(bytes32 matchId, uint256 amount) external",
     "function distributeWinnings(bytes32 matchId, address winner) external",
     "function refundMatch(bytes32 matchId, address player) external",
@@ -16,13 +17,18 @@ export const ESCROW_ABI = [
     "function setRake(uint256 _bps) external",
 
     // View Functions
-    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive)",
+    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)",
+    "function getDeposited(bytes32 matchId, address player) external view returns (uint256)",
+    "function deposited(bytes32, address) external view returns (uint256)",
+    "function expectedPlayer1(bytes32) external view returns (address)",
+    "function expectedPlayer2(bytes32) external view returns (address)",
     "function treasury() external view returns (address)",
     "function bot() external view returns (address)",
     "function rakeBps() external view returns (uint256)",
     "function MAX_RAKE_BPS() external view returns (uint256)",
 
     // Events
+    "event MatchCreated(bytes32 indexed matchId, address player1, address player2)",
     "event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount)",
     "event Payout(bytes32 indexed matchId, address indexed winner, uint256 prize, uint256 fee)",
     "event Refund(bytes32 indexed matchId, address indexed player, uint256 amount)"

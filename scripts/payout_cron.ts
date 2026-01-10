@@ -1,209 +1,327 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+/**
+ * Janitor Cron - Settlement Reconciliation
+ * 
+ * This script:
+ * 1. Finds stuck matches (DATHOST_BOOTING, LIVE that are too old)
+ * 2. Polls DatHost for truth
+ * 3. Acquires atomic DB lock
+ * 4. Reconciles chain state
+ * 5. Executes settlement if needed
+ * 
+ * Run: npx ts-node scripts/payout_cron.ts
+ * or build and run with node
+ */
+
+import { createClient } from '@supabase/supabase-js';
 import { ethers } from 'ethers';
-import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as dotenv from 'dotenv';
+import * as fs from 'fs';
 
-// Load environment variables from .env.local
-dotenv.config({ path: path.resolve(__dirname, '../.env.local') });
+// Load env vars
+const envPaths = [
+    path.resolve(__dirname, '../.env.local'),
+    path.resolve('/root/base-bot/.env'),
+    path.resolve(process.cwd(), '.env.local')
+];
+for (const p of envPaths) {
+    if (fs.existsSync(p)) {
+        dotenv.config({ path: p });
+        console.log(`Loaded env from: ${p}`);
+        break;
+    }
+}
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
-const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
-const RPC_URL = "https://sepolia.base.org";
-
-// DatHost Config
-const DATHOST_USER = process.env.DATHOST_USERNAME;
-const DATHOST_PASS = process.env.DATHOST_PASSWORD;
+// Config
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const RPC_URL = process.env.RPC_URL || "https://sepolia.base.org";
+const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
+const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY!;
+const DATHOST_USER = process.env.DATHOST_USER || process.env.DATHOST_USERNAME!;
+const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD!;
 
 const ESCROW_ABI = [
     "function distributeWinnings(bytes32 matchId, address winner) external",
-    "function refundMatch(bytes32 matchId, address player) external"
+    "function refundMatch(bytes32 matchId, address player) external",
+    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)"
 ];
 
-// Helper: Convert numeric ID to bytes32 for contract
-function numericToBytes32(num: number | string): string {
+function numericToBytes32(num: string | number): string {
     const hex = BigInt(num).toString(16);
     return '0x' + hex.padStart(64, '0');
 }
 
-// ---------------------------------------------------------
-// 1. FORFEIT MONITOR (Rage Quit Detector)
-// ---------------------------------------------------------
-async function checkForfeits(supabase: SupabaseClient) {
-    console.log("--- Checking for Forfeits ---");
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const provider = new ethers.JsonRpcProvider(RPC_URL);
+const wallet = new ethers.Wallet(PAYOUT_PRIVATE_KEY, provider);
+const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-    // Fetch LIVE matches where someone is disconnected
-    // logic: status = LIVE AND (p1_disconnect != null OR p2_disconnect != null)
-    const { data: matches, error } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('status', 'LIVE')
-        .not('player1_disconnect_time', 'is', null) // Supabase OR filter is tricky, so simplified loop
-    // If query is complex, just fetch all LIVE and filter in JS (assuming low volume of LIVE matches)
-    // Alternatively use .or()
+const FINALIZED = ["PROCESSING", "PAID", "REFUND_PROCESSING", "REFUNDED"];
 
-    if (!matches) return;
+// --- DatHost API ---
 
-    // Filter in JS for simplicity/robustness
-    const disconnectMatches = matches.filter(m => m.player1_disconnect_time || m.player2_disconnect_time);
-
-    if (disconnectMatches.length === 0) {
-        console.log("No disconnected players found.");
-        return;
-    }
-
-    const FORFEIT_TIMEOUT_MS = 5 * 60 * 1000; // 5 Minutes
-    const now = Date.now();
-
-    for (const match of disconnectMatches) {
-        let disconnectedPlayer = null;
-        let winnerAddress = null;
-        let disconnectTime = 0;
-
-        if (match.player1_disconnect_time) {
-            disconnectTime = new Date(match.player1_disconnect_time).getTime();
-            if (now - disconnectTime > FORFEIT_TIMEOUT_MS) {
-                disconnectedPlayer = 'Player 1';
-                winnerAddress = match.player2_address;
-            }
-        } else if (match.player2_disconnect_time) {
-            disconnectTime = new Date(match.player2_disconnect_time).getTime();
-            if (now - disconnectTime > FORFEIT_TIMEOUT_MS) {
-                disconnectedPlayer = 'Player 2';
-                winnerAddress = match.player1_address;
-            }
-        }
-
-        if (winnerAddress) {
-            console.log(`🚨 AUTO-FORFEIT TRIGGERED for Match ${match.id}`);
-            console.log(`   Reason: ${disconnectedPlayer} disconnected for > 5 mins.`);
-            console.log(`   Winner: ${winnerAddress}`);
-
-            // A. Update DB -> COMPLETE (Pending Payout)
-            await supabase
-                .from('matches')
-                .update({
-                    status: 'COMPLETE',
-                    winner_address: winnerAddress,
-                    payout_status: 'PENDING'
-                })
-                .eq('id', match.id);
-
-            // B. Reset Server (Kick everyone)
-            await resetServer(supabase, match.id);
-        } else {
-            console.log(`Match ${match.id}: Player disconnected, but timer not expired yet.`);
-        }
-    }
-}
-
-async function resetServer(supabase: SupabaseClient, matchId: string) {
-    // Find assigned server
-    const { data: server } = await supabase
-        .from('game_servers')
-        .select('*')
-        .eq('current_match_id', matchId)
-        .single();
-
-    if (!server || !DATHOST_USER || !DATHOST_PASS) return;
-
-    console.log(`   Cleaning up server ${server.id}...`);
+async function getDatHostMatch(dathostMatchId: string): Promise<any> {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
-    const cmds = ['kickall', 'css_endmatch'];
-
-    for (const cmd of cmds) {
-        try {
-            await fetch(`https://dathost.net/api/0.1/game-servers/${server.dathost_id}/console`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Basic ${auth}`,
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                },
-                body: new URLSearchParams({ line: cmd }).toString()
-            });
-        } catch (e) {
-            console.error("   RCON Error:", e);
-        }
-    }
-
-    // Free DB
-    await supabase
-        .from('game_servers')
-        .update({ status: 'FREE', current_match_id: null })
-        .eq('id', server.id);
-
-    console.log("   Server freed.");
+    const res = await fetch(`https://dathost.net/api/0.1/cs2-matches/${dathostMatchId}`, {
+        headers: { Authorization: `Basic ${auth}` }
+    });
+    if (res.status === 404) return { notFound: true };
+    if (!res.ok) throw new Error(`DatHost get failed: ${res.status}`);
+    return await res.json();
 }
 
+// --- Reconciliation ---
 
-// ---------------------------------------------------------
-// 2. PAYOUT PROCESSOR (Blockchain)
-// ---------------------------------------------------------
-async function processPayouts(supabase: SupabaseClient, escrow: ethers.Contract) {
-    console.log("--- Checking for Payouts ---");
+async function receiptStatus(txHash: string): Promise<string> {
+    try {
+        const tx = await provider.getTransaction(txHash);
+        if (!tx) return "notfound";
+        if (!tx.blockNumber) return "pending";
+        const r = await provider.getTransactionReceipt(txHash);
+        if (!r) return "pending";
+        return r.status === 1 ? "success" : "reverted";
+    } catch {
+        return "notfound";
+    }
+}
 
-    const { data: matches, error } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('status', 'COMPLETE')
-        .eq('payout_status', 'PENDING');
-
-    if (error) {
-        console.error("DB Error:", error);
-        return;
+async function reconcileSettlement(match: any): Promise<{ done: boolean; reason: string }> {
+    // Check payout tx
+    if (match.payout_tx_hash) {
+        const s = await receiptStatus(match.payout_tx_hash);
+        if (s === "success") {
+            await supabase.from("matches").update({
+                status: "COMPLETE",
+                payout_status: "PAID",
+                settled_at: new Date().toISOString(),
+            }).eq("id", match.id);
+            return { done: true, reason: "payout_receipt_success" };
+        }
+        if (s === "pending") return { done: true, reason: "payout_pending" };
     }
 
-    if (!matches || matches.length === 0) {
-        console.log("No pending payouts found.");
-        return;
+    // Check refund txs
+    for (const key of ["refund_tx_hash_1", "refund_tx_hash_2"]) {
+        const h = match[key];
+        if (!h) continue;
+        const s = await receiptStatus(h);
+        if (s === "pending") return { done: true, reason: "refund_pending" };
     }
 
-    console.log(`Found ${matches.length} matches to process.`);
+    // Contract state
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    try {
+        const [, , pot, isComplete, isActive, winner] = await escrow.getMatch(matchIdBytes32);
+        if (isComplete && !isActive && pot === 0n) {
+            if (winner !== ethers.ZeroAddress) {
+                await supabase.from("matches").update({
+                    status: "COMPLETE",
+                    payout_status: "PAID",
+                    winner_address: winner,
+                    settled_at: new Date().toISOString(),
+                }).eq("id", match.id);
+                return { done: true, reason: "contract_paid" };
+            } else {
+                await supabase.from("matches").update({
+                    status: "CANCELLED",
+                    payout_status: "REFUNDED",
+                    settled_at: new Date().toISOString(),
+                }).eq("id", match.id);
+                return { done: true, reason: "contract_refunded" };
+            }
+        }
+    } catch (e: any) {
+        console.error("Contract check error:", e.message);
+    }
 
-    for (const match of matches) {
-        const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-        console.log(`Processing Match ID: ${match.contract_match_id} (bytes32: ${matchIdBytes32}) | Winner: ${match.winner_address}`);
+    return { done: false, reason: "not_settled" };
+}
 
+// --- Settlement ---
+
+async function handlePayout(match: any, winnerTeam: "team1" | "team2") {
+    const winnerAddress = winnerTeam === "team1" ? match.player1_address : match.player2_address;
+    if (!winnerAddress) throw new Error("Winner address missing");
+
+    await supabase.from("matches").update({ settlement_kind: "PAYOUT" }).eq("id", match.id);
+
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    const tx = await escrow.distributeWinnings(matchIdBytes32, winnerAddress);
+    await supabase.from("matches").update({ payout_tx_hash: tx.hash }).eq("id", match.id);
+    console.log(`   📝 TX: ${tx.hash}`);
+    await tx.wait();
+
+    await supabase.from("matches").update({
+        status: "COMPLETE",
+        payout_status: "PAID",
+        winner_address: winnerAddress,
+        settled_at: new Date().toISOString(),
+    }).eq("id", match.id);
+}
+
+async function handleRefund(match: any) {
+    await supabase.from("matches").update({ settlement_kind: "REFUND" }).eq("id", match.id);
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+
+    if (match.player1_address) {
         try {
-            // A. Mark as PROCESSING
-            await supabase.from('matches').update({ payout_status: 'PROCESSING' }).eq('id', match.id);
-
-            // B. Execute Payout
-            const tx = await escrow.distributeWinnings(matchIdBytes32, match.winner_address);
-            console.log(`Tx Sent: ${tx.hash}`);
-            await tx.wait();
-            console.log("Tx Confirmed!");
-
-            // C. Mark as PAID
-            await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
-
+            const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
+            await supabase.from("matches").update({ refund_tx_hash_1: tx1.hash }).eq("id", match.id);
+            console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
+            await tx1.wait();
         } catch (e: any) {
-            console.error(`FAILED to pay match ${match.id}:`, e.message);
-            // D. Revert to FAILED
-            await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
+            if (!e.message?.includes("Nothing to refund")) throw e;
+        }
+    }
+
+    if (match.player2_address) {
+        try {
+            const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
+            await supabase.from("matches").update({ refund_tx_hash_2: tx2.hash }).eq("id", match.id);
+            console.log(`   📝 Refund P2 TX: ${tx2.hash}`);
+            await tx2.wait();
+        } catch (e: any) {
+            if (!e.message?.includes("Nothing to refund")) throw e;
+        }
+    }
+
+    await supabase.from("matches").update({
+        status: "CANCELLED",
+        payout_status: "REFUNDED",
+        settled_at: new Date().toISOString(),
+    }).eq("id", match.id);
+}
+
+// --- Janitor Logic ---
+
+async function acquireLock(matchId: string): Promise<any | null> {
+    const lockId = crypto.randomUUID();
+    const { data } = await supabase
+        .from("matches")
+        .update({
+            payout_status: "PROCESSING",
+            settlement_lock_id: lockId,
+        })
+        .eq("id", matchId)
+        .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
+        .select()
+        .maybeSingle();
+
+    return data ?? null;
+}
+
+async function runJanitor() {
+    const now = Date.now();
+    const bootingCutoff = new Date(now - 5 * 60_000).toISOString();
+    const liveCutoff = new Date(now - 20 * 60_000).toISOString();
+
+    // Find stuck matches
+    const { data: stuckMatches } = await supabase
+        .from("matches")
+        .select("*")
+        .in("status", ["DATHOST_BOOTING", "LIVE"])
+        .lt("settlement_attempts", 10);
+
+    if (!stuckMatches || stuckMatches.length === 0) return;
+
+    console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck matches`);
+
+    for (const match of stuckMatches) {
+        if (!match.dathost_match_id) continue;
+
+        // Skip if too recent
+        const createdAt = new Date(match.created_at).getTime();
+        const updatedAt = new Date(match.updated_at).getTime();
+
+        if (match.status === "DATHOST_BOOTING" && createdAt > now - 5 * 60_000) continue;
+        if (match.status === "LIVE" && updatedAt > now - 20 * 60_000) continue;
+
+        console.log(`\n[Janitor] Checking match ${match.id} (${match.status})`);
+
+        // Get DatHost truth
+        let dh: any;
+        try {
+            dh = await getDatHostMatch(match.dathost_match_id);
+        } catch (e: any) {
+            console.log(`   ⚠️ DatHost fetch failed: ${e.message}`);
+            await supabase.from("matches").update({
+                last_settlement_error: `DatHost fetch: ${e.message}`
+            }).eq("id", match.id);
+            continue;
+        }
+
+        // Decide action
+        let target: "PAYOUT" | "REFUND" | null = null;
+        let winnerTeam: "team1" | "team2" | null = null;
+
+        if (dh.notFound) {
+            console.log(`   ℹ️ Match not found in DatHost -> refund`);
+            target = "REFUND";
+        } else if (dh.status === "cancelled") {
+            console.log(`   ℹ️ Match cancelled in DatHost -> refund`);
+            target = "REFUND";
+        } else if (dh.status === "ended" && dh.winner) {
+            console.log(`   ℹ️ Match ended in DatHost -> payout to ${dh.winner}`);
+            target = "PAYOUT";
+            winnerTeam = dh.winner;
+        } else {
+            console.log(`   ℹ️ DatHost status: ${dh.status} - skipping`);
+            continue;
+        }
+
+        // Acquire lock
+        const locked = await acquireLock(match.id);
+        if (!locked) {
+            console.log(`   ⏭️ Could not acquire lock (already processing)`);
+            continue;
+        }
+
+        // Increment attempts
+        await supabase.from("matches").update({
+            settlement_attempts: (match.settlement_attempts ?? 0) + 1,
+            dathost_status_snapshot: dh,
+        }).eq("id", match.id);
+
+        // Reconcile first
+        const recon = await reconcileSettlement({ ...match, ...locked });
+        if (recon.done) {
+            console.log(`   ✅ Reconciled: ${recon.reason}`);
+            continue;
+        }
+
+        // Execute settlement
+        try {
+            if (target === "PAYOUT") {
+                await handlePayout({ ...match, ...locked }, winnerTeam!);
+                console.log(`   ✅ PAID`);
+            } else {
+                await handleRefund({ ...match, ...locked });
+                console.log(`   ✅ REFUNDED`);
+            }
+        } catch (e: any) {
+            console.error(`   ❌ Settlement error: ${e.message}`);
+            await supabase.from("matches").update({
+                payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED",
+                last_settlement_error: e.message,
+            }).eq("id", match.id);
         }
     }
 }
 
+// --- Main Loop ---
 
-// ---------------------------------------------------------
-// MAIN LOOP
-// ---------------------------------------------------------
 async function main() {
-    if (!PRIVATE_KEY) {
-        console.error("ERROR: PAYOUT_PRIVATE_KEY not found in .env.local");
-        process.exit(1);
+    console.log("🤖 Janitor Started (DatHost Match API Architecture)");
+
+    while (true) {
+        try {
+            await runJanitor();
+        } catch (e: any) {
+            console.error("Janitor loop error:", e.message);
+        }
+        await new Promise(r => setTimeout(r, 30_000)); // Run every 30s
     }
-
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
-
-    // Run sequencially
-    await checkForfeits(supabase);
-    await processPayouts(supabase, escrow);
 }
 
 main();
