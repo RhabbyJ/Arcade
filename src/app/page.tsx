@@ -730,7 +730,8 @@ function ArcadeInterface() {
                                                 await fetch('/api/match/cancel', {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({ matchId: matchData.id, walletAddress: address })
+                                                    credentials: 'include',
+                                                    body: JSON.stringify({ matchId: matchData.id })
                                                 });
                                                 alert("Match cancelled.");
                                                 window.location.reload();
@@ -882,7 +883,8 @@ function ArcadeInterface() {
                               const res = await fetch('/api/match/cancel', {
                                   method: 'POST',
                                   headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ matchId: matchData.id, walletAddress: address })
+                                  credentials: 'include',
+                                  body: JSON.stringify({ matchId: matchData.id })
                               });
                               const { error } = await res.json();
                               if (error) alert(error.message);

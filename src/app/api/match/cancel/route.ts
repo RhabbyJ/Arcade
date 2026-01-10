@@ -1,61 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getWalletFromSession } from '@/lib/sessionAuth';
 
 /**
  * POST /api/match/cancel
  * 
  * Cancel a match in LOBBY status (no deposits yet).
- * Server-side operation to bypass RLS.
+ * Requires: Authorization: Bearer <session_token>
+ * Atomic operation - prevents race conditions.
  */
 export async function POST(req: NextRequest) {
     try {
-        const { matchId, walletAddress } = await req.json();
+        const walletLower = await getWalletFromSession(req);
 
-        if (!matchId || !walletAddress) {
-            return NextResponse.json(
-                { error: "Missing required fields: matchId, walletAddress" },
-                { status: 400 }
-            );
+        if (!walletLower) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        // 1. Fetch match
-        const { data: match, error: fetchError } = await supabaseAdmin
+        const { matchId } = await req.json();
+
+        if (!matchId) {
+            return NextResponse.json({ error: "Missing matchId" }, { status: 400 });
+        }
+
+        // Atomic cancel: only cancel if LOBBY AND caller is a player
+        const { data: match, error } = await supabaseAdmin
             .from('matches')
-            .select('*')
+            .update({ status: 'CANCELLED' })
             .eq('id', matchId)
-            .single();
+            .eq('status', 'LOBBY')
+            .or(`player1_address.ilike.${walletLower},player2_address.ilike.${walletLower}`)
+            .select('*')
+            .maybeSingle();
 
-        if (fetchError || !match) {
-            return NextResponse.json({ error: "Match not found" }, { status: 404 });
+        if (error) {
+            console.error("[Cancel Match API] Error:", error);
+            return NextResponse.json({ error: error.message }, { status: 500 });
         }
 
-        // 2. Check caller is a player
-        const isPlayer1 = match.player1_address?.toLowerCase() === walletAddress.toLowerCase();
-        const isPlayer2 = match.player2_address?.toLowerCase() === walletAddress.toLowerCase();
-
-        if (!isPlayer1 && !isPlayer2) {
-            return NextResponse.json({ error: "You are not a player in this match" }, { status: 403 });
-        }
-
-        // 3. Only allow cancel in LOBBY status (no deposits)
-        if (match.status !== 'LOBBY') {
+        if (!match) {
             return NextResponse.json({
-                error: `Cannot cancel match in ${match.status} status. Use refund endpoint if deposits were made.`
+                error: "Cannot cancel (not your match, or not in LOBBY)"
             }, { status: 400 });
         }
 
-        // 4. Cancel the match
-        const { error: updateError } = await supabaseAdmin
-            .from('matches')
-            .update({ status: 'CANCELLED' })
-            .eq('id', matchId);
-
-        if (updateError) {
-            console.error("[Cancel Match API] Error:", updateError);
-            return NextResponse.json({ error: "Failed to cancel match" }, { status: 500 });
-        }
-
-        console.log(`[Cancel Match API] Match ${matchId} cancelled by ${walletAddress}`);
+        console.log(`[Cancel Match API] Match ${matchId} cancelled by ${walletLower}`);
 
         return NextResponse.json({
             success: true,

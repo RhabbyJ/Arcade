@@ -1,21 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getWalletFromSession } from '@/lib/sessionAuth';
 
 /**
- * GET /api/match/active?wallet=0x...
+ * GET /api/match/active
  * 
- * Returns the active match for a wallet address (if any).
- * Server-side query to bypass RLS.
+ * Returns the active match for the authenticated user.
+ * Requires: Authorization: Bearer <session_token>
  */
 export async function GET(req: NextRequest) {
     try {
-        const wallet = req.nextUrl.searchParams.get('wallet');
+        const walletLower = await getWalletFromSession(req);
 
-        if (!wallet) {
-            return NextResponse.json({ error: "Missing wallet parameter" }, { status: 400 });
+        if (!walletLower) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-
-        const walletLower = wallet.toLowerCase();
 
         const { data, error } = await supabaseAdmin
             .from('matches')

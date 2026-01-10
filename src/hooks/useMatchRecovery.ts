@@ -21,8 +21,18 @@ export function useMatchRecovery() {
             console.log("[Recovery] Checking for active matches for:", address);
 
             try {
-                // Use API route instead of direct Supabase query
-                const res = await fetch(`/api/match/active?wallet=${address}`);
+                // Use API route with credentials to include session cookie
+                const res = await fetch('/api/match/active', {
+                    credentials: 'include' // Include httpOnly session cookie
+                });
+
+                if (res.status === 401) {
+                    console.log("[Recovery] Not authenticated (no session)");
+                    setRecoveredMatch(null);
+                    setLoading(false);
+                    return;
+                }
+
                 const { match, error } = await res.json();
 
                 if (error) {
