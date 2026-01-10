@@ -1,3 +1,16 @@
+/**
+ * Janitor Cron - Settlement Reconciliation (DatHost Match API)
+ * 
+ * This script:
+ * 1. Finds stuck matches (DATHOST_BOOTING, LIVE that are too old)
+ * 2. Polls DatHost for truth
+ * 3. Acquires atomic DB lock
+ * 4. Reconciles chain state
+ * 5. Executes settlement if needed
+ * 
+ * Run: node scripts/payout_cron.js
+ */
+
 const { createClient } = require('@supabase/supabase-js');
 const { ethers } = require('ethers');
 const path = require('path');
@@ -8,7 +21,8 @@ const fs = require('fs');
 const envPaths = [
     path.resolve(__dirname, '../.env.local'),
     path.resolve('/root/base-bot/.env'),
-    path.resolve(process.cwd(), '.env.local')
+    path.resolve(process.cwd(), '.env.local'),
+    path.resolve(process.cwd(), '.env')
 ];
 for (const p of envPaths) {
     if (fs.existsSync(p)) {
@@ -19,18 +33,18 @@ for (const p of envPaths) {
 }
 
 // Config
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
-const PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
-const RPC_URL = "https://sepolia.base.org";
-const DATHOST_USER = process.env.DATHOST_USERNAME;
-const DATHOST_PASS = process.env.DATHOST_PASSWORD;
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const RPC_URL = process.env.RPC_URL || "https://sepolia.base.org";
+const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
+const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
+const DATHOST_USER = process.env.DATHOST_USER || process.env.DATHOST_USERNAME;
+const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD;
 
 const ESCROW_ABI = [
     "function distributeWinnings(bytes32 matchId, address winner) external",
     "function refundMatch(bytes32 matchId, address player) external",
-    "function matches(bytes32) view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive)"
+    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)"
 ];
 
 function numericToBytes32(num) {
@@ -38,404 +52,273 @@ function numericToBytes32(num) {
     return '0x' + hex.padStart(64, '0');
 }
 
-// State
-const warmupState = new Map();
-const afkState = new Map();
-const AFK_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes for warmup AFK
-const FORFEIT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes for in-game forfeit
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const provider = new ethers.JsonRpcProvider(RPC_URL);
+const wallet = new ethers.Wallet(PAYOUT_PRIVATE_KEY, provider);
+const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-// --- HELPERS ---
+const FINALIZED = ["PROCESSING", "PAID", "REFUND_PROCESSING", "REFUNDED"];
 
-async function sendRcon(dathostId, command) {
-    if (!DATHOST_USER || !DATHOST_PASS) return null;
+// --- DatHost API ---
+
+async function getDatHostMatch(dathostMatchId) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+    const res = await fetch(`https://dathost.net/api/0.1/cs2-matches/${dathostMatchId}`, {
+        headers: { Authorization: `Basic ${auth}` }
+    });
+    if (res.status === 404) return { notFound: true };
+    if (!res.ok) throw new Error(`DatHost get failed: ${res.status}`);
+    return await res.json();
+}
 
+// --- Reconciliation ---
+
+async function receiptStatus(txHash) {
     try {
-        const response = await fetch(`https://dathost.net/api/0.1/game-servers/${dathostId}/console`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Basic ${auth}`,
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: new URLSearchParams({ line: command })
-        });
-        return await response.text();
-    } catch (e) {
-        console.error("RCON Error:", e.message);
-        return null;
+        const tx = await provider.getTransaction(txHash);
+        if (!tx) return "notfound";
+        if (!tx.blockNumber) return "pending";
+        const r = await provider.getTransactionReceipt(txHash);
+        if (!r) return "pending";
+        return r.status === 1 ? "success" : "reverted";
+    } catch {
+        return "notfound";
     }
 }
 
-// Use DatHost API for player count (simple, reliable)
-async function getRealPlayerCount(dathostId) {
-    if (!DATHOST_USER || !DATHOST_PASS) return 0;
-    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+async function reconcileSettlement(match) {
+    // Check payout tx
+    if (match.payout_tx_hash) {
+        const s = await receiptStatus(match.payout_tx_hash);
+        if (s === "success") {
+            await supabase.from("matches").update({
+                status: "COMPLETE",
+                payout_status: "PAID",
+                settled_at: new Date().toISOString(),
+            }).eq("id", match.id);
+            return { done: true, reason: "payout_receipt_success" };
+        }
+        if (s === "pending") return { done: true, reason: "payout_pending" };
+    }
 
+    // Check refund txs
+    for (const key of ["refund_tx_hash_1", "refund_tx_hash_2"]) {
+        const h = match[key];
+        if (!h) continue;
+        const s = await receiptStatus(h);
+        if (s === "pending") return { done: true, reason: "refund_pending" };
+    }
+
+    // Contract state
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
     try {
-        const res = await fetch(`https://dathost.net/api/0.1/game-servers/${dathostId}`, {
-            method: 'GET',
-            headers: { 'Authorization': `Basic ${auth}` }
-        });
-
-        if (!res.ok) {
-            console.error(`DatHost API failed: ${res.status} ${res.statusText}`);
-            return 0;
-        }
-
-        const json = await res.json();
-        return json.players_online || 0;
-    } catch (e) {
-        console.error("DatHost API error:", e.message);
-        return 0;
-    }
-}
-
-// --- LOGIC ---
-
-async function verifyDeposits(supabase, provider) {
-    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'DEPOSITING').or('p1_deposited.eq.false,p2_deposited.eq.false');
-    if (!matches) return;
-    for (const match of matches) {
-        if (match.p1_tx_hash && !match.p1_deposited) {
-            try {
-                const tx = await provider.getTransactionReceipt(match.p1_tx_hash);
-                if (tx && tx.status === 1) {
-                    console.log(`[${new Date().toISOString()}] ✅ P1 Deposit VERIFIED: Match ${match.contract_match_id}`);
-                    await supabase.from('matches').update({ p1_deposited: true }).eq('id', match.id);
-                }
-            } catch (e) { }
-        }
-        if (match.p2_tx_hash && !match.p2_deposited) {
-            try {
-                const tx = await provider.getTransactionReceipt(match.p2_tx_hash);
-                if (tx && tx.status === 1) {
-                    console.log(`[${new Date().toISOString()}] ✅ P2 Deposit VERIFIED: Match ${match.contract_match_id}`);
-                    await supabase.from('matches').update({ p2_deposited: true }).eq('id', match.id);
-                }
-            } catch (e) { }
-        }
-    }
-}
-
-async function assignServers(supabase) {
-    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'DEPOSITING').eq('p1_deposited', true).eq('p2_deposited', true);
-    if (!matches || matches.length === 0) return;
-    const { data: servers } = await supabase.from('game_servers').select('*').eq('status', 'FREE').limit(matches.length);
-    if (!servers || servers.length === 0) {
-        console.log("⚠️ No free servers available.");
-        return;
-    }
-
-    for (let i = 0; i < Math.min(matches.length, servers.length); i++) {
-        const match = matches[i];
-        const server = servers[i];
-        console.log(`[${new Date().toISOString()}] 🎮 Assigning Server ${server.name} to Match ${match.contract_match_id}`);
-        await supabase.from('game_servers').update({ status: 'BUSY', current_match_id: match.id }).eq('id', server.id);
-
-        await sendRcon(server.dathost_id, 'get5_endmatch');
-        await sendRcon(server.dathost_id, 'css_endmatch');
-        await sendRcon(server.dathost_id, 'host_workshop_map 3344743064');
-        await sendRcon(server.dathost_id, 'exec MatchZy/warmup.cfg');
-
-        await supabase.from('matches').update({ status: 'LIVE', server_assigned_at: new Date().toISOString() }).eq('id', match.id);
-        console.log(`[${new Date().toISOString()}] 🚀 Match ${match.contract_match_id} is LIVE! (60s Warmup)`);
-    }
-}
-
-// PHASE A: Pre-match warmup monitoring (cancel + refund if AFK)
-async function checkAutoStart(supabase, escrow) {
-    const now = Date.now();
-    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').is('match_started_at', null);
-    if (!matches) return;
-
-    for (const match of matches) {
-        if (match.server_assigned_at && now - new Date(match.server_assigned_at).getTime() < 10000) continue;
-        const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
-        if (!server) continue;
-
-        const playerCount = await getRealPlayerCount(server.dathost_id);
-        console.log(`   📊 Match ${match.contract_match_id}: ${playerCount} Players (Warmup Phase)`);
-
-        // NOT ENOUGH PLAYERS during warmup
-        if (playerCount < 2) {
-            warmupState.delete(match.id);
-
-            if (!afkState.has(match.id)) {
-                console.log(`   👤 Match ${match.contract_match_id}: Waiting for players. Starting AFK timer.`);
-                afkState.set(match.id, { start: now });
+        const [, , pot, isComplete, isActive, winner] = await escrow.getMatch(matchIdBytes32);
+        if (isComplete && !isActive && pot === BigInt(0)) {
+            if (winner !== ethers.ZeroAddress) {
+                await supabase.from("matches").update({
+                    status: "COMPLETE",
+                    payout_status: "PAID",
+                    winner_address: winner,
+                    settled_at: new Date().toISOString(),
+                }).eq("id", match.id);
+                return { done: true, reason: "contract_paid" };
             } else {
-                const elapsed = now - afkState.get(match.id).start;
-
-                if (elapsed > AFK_TIMEOUT_MS) {
-                    console.log(`[${new Date().toISOString()}] ⏰ Match ${match.contract_match_id}: AFK Timeout (Warmup).`);
-                    await sendRcon(server.dathost_id, 'say "Match Cancelled (AFK)"');
-                    await sendRcon(server.dathost_id, 'css_endmatch');
-                    await refundBothPlayers(supabase, escrow, match);
-                    await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', match.id);
-                    await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
-                    afkState.delete(match.id);
-                }
+                await supabase.from("matches").update({
+                    status: "CANCELLED",
+                    payout_status: "REFUNDED",
+                    settled_at: new Date().toISOString(),
+                }).eq("id", match.id);
+                return { done: true, reason: "contract_refunded" };
             }
+        }
+    } catch (e) {
+        console.error("Contract check error:", e.message);
+    }
+
+    return { done: false, reason: "not_settled" };
+}
+
+// --- Settlement ---
+
+async function handlePayout(match, winnerTeam) {
+    const winnerAddress = winnerTeam === "team1" ? match.player1_address : match.player2_address;
+    if (!winnerAddress) throw new Error("Winner address missing");
+
+    await supabase.from("matches").update({ settlement_kind: "PAYOUT" }).eq("id", match.id);
+
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    const tx = await escrow.distributeWinnings(matchIdBytes32, winnerAddress);
+    await supabase.from("matches").update({ payout_tx_hash: tx.hash }).eq("id", match.id);
+    console.log(`   📝 TX: ${tx.hash}`);
+    await tx.wait();
+
+    await supabase.from("matches").update({
+        status: "COMPLETE",
+        payout_status: "PAID",
+        winner_address: winnerAddress,
+        settled_at: new Date().toISOString(),
+    }).eq("id", match.id);
+}
+
+async function handleRefund(match) {
+    await supabase.from("matches").update({ settlement_kind: "REFUND" }).eq("id", match.id);
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+
+    if (match.player1_address) {
+        try {
+            const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
+            await supabase.from("matches").update({ refund_tx_hash_1: tx1.hash }).eq("id", match.id);
+            console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
+            await tx1.wait();
+        } catch (e) {
+            if (!e.message?.includes("Nothing to refund")) throw e;
+        }
+    }
+
+    if (match.player2_address) {
+        try {
+            const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
+            await supabase.from("matches").update({ refund_tx_hash_2: tx2.hash }).eq("id", match.id);
+            console.log(`   📝 Refund P2 TX: ${tx2.hash}`);
+            await tx2.wait();
+        } catch (e) {
+            if (!e.message?.includes("Nothing to refund")) throw e;
+        }
+    }
+
+    await supabase.from("matches").update({
+        status: "CANCELLED",
+        payout_status: "REFUNDED",
+        settled_at: new Date().toISOString(),
+    }).eq("id", match.id);
+}
+
+// --- Janitor Logic ---
+
+async function acquireLock(matchId) {
+    const lockId = require('crypto').randomUUID();
+    const { data } = await supabase
+        .from("matches")
+        .update({
+            payout_status: "PROCESSING",
+            settlement_lock_id: lockId,
+        })
+        .eq("id", matchId)
+        .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
+        .select()
+        .maybeSingle();
+
+    return data ?? null;
+}
+
+async function runJanitor() {
+    const now = Date.now();
+
+    // Find stuck matches
+    const { data: stuckMatches } = await supabase
+        .from("matches")
+        .select("*")
+        .in("status", ["DATHOST_BOOTING", "LIVE"])
+        .lt("settlement_attempts", 10);
+
+    if (!stuckMatches || stuckMatches.length === 0) return;
+
+    console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck matches`);
+
+    for (const match of stuckMatches) {
+        if (!match.dathost_match_id) continue;
+
+        // Skip if too recent
+        const createdAt = new Date(match.created_at).getTime();
+        const updatedAt = new Date(match.updated_at).getTime();
+
+        if (match.status === "DATHOST_BOOTING" && createdAt > now - 5 * 60_000) continue;
+        if (match.status === "LIVE" && updatedAt > now - 20 * 60_000) continue;
+
+        console.log(`\n[Janitor] Checking match ${match.id} (${match.status})`);
+
+        // Get DatHost truth
+        let dh;
+        try {
+            dh = await getDatHostMatch(match.dathost_match_id);
+        } catch (e) {
+            console.log(`   ⚠️ DatHost fetch failed: ${e.message}`);
+            await supabase.from("matches").update({
+                last_settlement_error: `DatHost fetch: ${e.message}`
+            }).eq("id", match.id);
             continue;
         }
 
-        // BOTH CONNECTED
-        if (playerCount >= 2) {
-            if (afkState.has(match.id)) afkState.delete(match.id);
+        // Decide action
+        let target = null;
+        let winnerTeam = null;
 
-            if (!warmupState.has(match.id)) {
-                console.log(`   ✅ Both Connected. Config timer running...`);
-                warmupState.set(match.id, { start: now });
-            } else {
-                const elapsed = now - warmupState.get(match.id).start;
-                if (elapsed > 75000) {
-                    console.log(`[${new Date().toISOString()}] 🚦 Match ${match.contract_match_id}: Stuck in Warmup. FORCING START.`);
-                    await sendRcon(server.dathost_id, 'css_start');
-                    await supabase.from('matches').update({ match_started_at: new Date().toISOString() }).eq('id', match.id);
-                    warmupState.delete(match.id);
-                }
-            }
-        }
-    }
-}
-
-// PHASE B: Post-start forfeit monitoring (cancel + refund if player leaves)
-async function checkForfeits(supabase, escrow) {
-    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'LIVE').not('match_started_at', 'is', null);
-    if (!matches) return;
-
-    const now = Date.now();
-
-    for (const match of matches) {
-        const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', match.id).single();
-        if (!server) continue;
-
-        const playerCount = await getRealPlayerCount(server.dathost_id);
-
-        // If <2 players during LIVE match
-        if (playerCount < 2) {
-            if (!afkState.has(`forfeit_${match.id}`)) {
-                console.log(`   ⚠️ Match ${match.contract_match_id}: Only ${playerCount} player(s) during LIVE. Starting forfeit timer.`);
-                afkState.set(`forfeit_${match.id}`, { start: now });
-            } else {
-                const elapsed = now - afkState.get(`forfeit_${match.id}`).start;
-
-                if (elapsed > FORFEIT_TIMEOUT_MS) {
-                    console.log(`[${new Date().toISOString()}] 🚨 Match ${match.contract_match_id}: Forfeit (player left for 5min).`);
-                    // Without knowing WHO left, we cancel + refund (safe behavior)
-                    // Webhook is the authoritative source for winner
-                    await sendRcon(server.dathost_id, 'say "Match Cancelled (Forfeit)"');
-                    await sendRcon(server.dathost_id, 'css_endmatch');
-                    await refundBothPlayers(supabase, escrow, match);
-                    await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', match.id);
-                    await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
-                    afkState.delete(`forfeit_${match.id}`);
-                }
-            }
+        if (dh.notFound) {
+            console.log(`   ℹ️ Match not found in DatHost -> refund`);
+            target = "REFUND";
+        } else if (dh.status === "cancelled") {
+            console.log(`   ℹ️ Match cancelled in DatHost -> refund`);
+            target = "REFUND";
+        } else if (dh.status === "ended" && dh.winner) {
+            console.log(`   ℹ️ Match ended in DatHost -> payout to ${dh.winner}`);
+            target = "PAYOUT";
+            winnerTeam = dh.winner;
         } else {
-            // Reset forfeit timer if both players are back
-            afkState.delete(`forfeit_${match.id}`);
+            console.log(`   ℹ️ DatHost status: ${dh.status} - skipping`);
+            continue;
         }
-    }
-}
 
-// FIX #4: Reconcile stuck PROCESSING payouts on startup/loop
-async function reconcileStuckPayouts(supabase, escrow, provider) {
-    const { data: matches } = await supabase.from('matches').select('*').eq('payout_status', 'PROCESSING');
-    if (!matches || matches.length === 0) return;
+        // Acquire lock
+        const locked = await acquireLock(match.id);
+        if (!locked) {
+            console.log(`   ⏭️ Could not acquire lock (already processing)`);
+            continue;
+        }
 
-    console.log(`🔄 Reconciling ${matches.length} stuck PROCESSING payout(s)...`);
+        // Increment attempts
+        await supabase.from("matches").update({
+            settlement_attempts: (match.settlement_attempts ?? 0) + 1,
+            dathost_status_snapshot: dh,
+        }).eq("id", match.id);
 
-    for (const match of matches) {
-        const matchIdBytes = numericToBytes32(match.contract_match_id);
+        // Reconcile first
+        const recon = await reconcileSettlement({ ...match, ...locked });
+        if (recon.done) {
+            console.log(`   ✅ Reconciled: ${recon.reason}`);
+            continue;
+        }
 
+        // Execute settlement
         try {
-            // Check on-chain state
-            const onchain = await escrow.matches(matchIdBytes);
-            const isComplete = onchain[3];
-
-            if (isComplete) {
-                console.log(`   ✅ Match ${match.contract_match_id}: Already paid on-chain. Marking PAID.`);
-                await supabase.from('matches').update({
-                    payout_status: 'PAID',
-                    payout_note: 'Reconciled from PROCESSING'
-                }).eq('id', match.id);
-                await resetServer(supabase, match.id);
-                continue;
-            }
-
-            // If we have a TX hash, check its status
-            if (match.payout_tx_hash) {
-                try {
-                    const receipt = await provider.getTransactionReceipt(match.payout_tx_hash);
-                    if (receipt) {
-                        if (receipt.status === 1) {
-                            console.log(`   ✅ Match ${match.contract_match_id}: TX confirmed. Marking PAID.`);
-                            await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
-                            await resetServer(supabase, match.id);
-                        } else {
-                            console.log(`   ❌ Match ${match.contract_match_id}: TX reverted. Marking FAILED.`);
-                            await supabase.from('matches').update({ payout_status: 'FAILED' }).eq('id', match.id);
-                        }
-                        continue;
-                    }
-                    // TX pending - leave as PROCESSING
-                    console.log(`   ⏳ Match ${match.contract_match_id}: TX still pending.`);
-                } catch (e) {
-                    console.error(`   ⚠️ TX check error: ${e.message}`);
-                }
+            if (target === "PAYOUT") {
+                await handlePayout({ ...match, ...locked }, winnerTeam);
+                console.log(`   ✅ PAID`);
             } else {
-                // No TX hash = never actually sent, revert to PENDING
-                console.log(`   🔄 Match ${match.contract_match_id}: No TX hash. Reverting to PENDING.`);
-                await supabase.from('matches').update({ payout_status: 'PENDING' }).eq('id', match.id);
+                await handleRefund({ ...match, ...locked });
+                console.log(`   ✅ REFUNDED`);
             }
         } catch (e) {
-            console.error(`   ❌ Reconcile error for ${match.contract_match_id}: ${e.message}`);
+            console.error(`   ❌ Settlement error: ${e.message}`);
+            await supabase.from("matches").update({
+                payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED",
+                last_settlement_error: e.message,
+            }).eq("id", match.id);
         }
     }
 }
 
-// Improved payout logic with proper state machine
-async function processPayouts(supabase, escrow) {
-    const { data: matches } = await supabase.from('matches').select('*').eq('status', 'COMPLETE').eq('payout_status', 'PENDING');
-    if (!matches || matches.length === 0) return;
+// --- Main Loop ---
 
-    console.log(`\n💰 [${new Date().toISOString()}] Processing ${matches.length} payout(s)...`);
-
-    for (const match of matches) {
-        console.log(`   💰 PAYOUT: Match ${match.contract_match_id}`);
-
-        try {
-            // CHECK ON-CHAIN STATE FIRST (idempotency)
-            const matchIdBytes = numericToBytes32(match.contract_match_id);
-            const onchain = await escrow.matches(matchIdBytes);
-            const isComplete = onchain[3];
-
-            if (isComplete) {
-                console.log(`   ⏭️ Already paid on-chain. Updating DB.`);
-                await supabase.from('matches').update({
-                    payout_status: 'PAID',
-                    payout_note: 'Already complete on-chain'
-                }).eq('id', match.id);
-                await resetServer(supabase, match.id);
-                continue;
-            }
-
-            console.log(`   📤 Sending blockchain transaction...`);
-            const txStart = Date.now();
-
-            // Send TX and get hash
-            const tx = await escrow.distributeWinnings(matchIdBytes, match.winner_address);
-
-            // FIX #4: Store TX hash IMMEDIATELY after broadcast (before wait)
-            await supabase.from('matches').update({
-                payout_status: 'PROCESSING',
-                payout_tx_hash: tx.hash
-            }).eq('id', match.id);
-            console.log(`   📝 TX Hash: ${tx.hash}`);
-
-            // Wait for confirmation
-            await tx.wait();
-            const txDuration = Math.round((Date.now() - txStart) / 1000);
-            console.log(`   ✅ PAID! (TX took ${txDuration}s)`);
-
-            await supabase.from('matches').update({ payout_status: 'PAID' }).eq('id', match.id);
-            await resetServer(supabase, match.id);
-        } catch (e) {
-            console.error(`   ❌ Payout Failed: ${e.message}`);
-            // FIX #5: Only mark FAILED if no TX hash (definitive failure)
-            // If we have a TX hash, leave as PROCESSING for reconciliation
-            const { data: current } = await supabase.from('matches').select('payout_tx_hash').eq('id', match.id).single();
-            if (!current?.payout_tx_hash) {
-                await supabase.from('matches').update({ payout_status: 'PENDING' }).eq('id', match.id);
-            }
-            // If TX hash exists, reconciler will handle it
-        }
-    }
-}
-
-// Refund BOTH players
-async function refundBothPlayers(supabase, escrow, match) {
-    const matchIdBytes = numericToBytes32(match.contract_match_id);
-
-    try {
-        const onchain = await escrow.matches(matchIdBytes);
-        const pot = onchain[2];
-
-        if (pot.toString() === '0') {
-            console.log(`   ✅ No pot to refund (already empty).`);
-            await supabase.from('matches').update({ payout_status: 'REFUNDED' }).eq('id', match.id);
-            return;
-        }
-
-        // Refund P1
-        if (match.player1_address) {
-            try {
-                console.log(`   🔒 Refunding P1: ${match.player1_address.slice(0, 10)}...`);
-                const tx1 = await escrow.refundMatch(matchIdBytes, match.player1_address);
-                await tx1.wait();
-                console.log(`   ✅ P1 Refunded.`);
-            } catch (e) {
-                console.error(`   ⚠️ P1 Refund error: ${e.message}`);
-            }
-        }
-
-        // Refund P2
-        if (match.player2_address) {
-            try {
-                console.log(`   🔒 Refunding P2: ${match.player2_address.slice(0, 10)}...`);
-                const tx2 = await escrow.refundMatch(matchIdBytes, match.player2_address);
-                await tx2.wait();
-                console.log(`   ✅ P2 Refunded.`);
-            } catch (e) {
-                console.error(`   ⚠️ P2 Refund error: ${e.message}`);
-            }
-        }
-
-        await supabase.from('matches').update({ payout_status: 'REFUNDED' }).eq('id', match.id);
-    } catch (e) {
-        console.error(`   ❌ Refund error: ${e.message}`);
-        await supabase.from('matches').update({ payout_status: 'REFUND_FAILED' }).eq('id', match.id);
-    }
-}
-
-async function resetServer(supabase, matchId) {
-    const { data: server } = await supabase.from('game_servers').select('*').eq('current_match_id', matchId).single();
-    if (server) {
-        console.log(`   🔄 Resetting Server ${server.name}`);
-        await sendRcon(server.dathost_id, 'css_endmatch');
-        await sendRcon(server.dathost_id, 'host_workshop_map 3344743064');
-        await supabase.from('game_servers').update({ status: 'FREE', current_match_id: null }).eq('id', server.id);
-    }
-    warmupState.delete(matchId);
-    afkState.delete(matchId);
-    afkState.delete(`forfeit_${matchId}`);
-}
-
-// MAIN LOOP
 async function main() {
-    const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-    const provider = new ethers.JsonRpcProvider(RPC_URL);
-    const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-    const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
-
-    console.log("🤖 Bot Started (Version H - Complete Fixes)");
-
-    // FIX #4: Reconcile any stuck PROCESSING payouts on startup
-    await reconcileStuckPayouts(supabase, escrow, provider);
+    console.log("🤖 Janitor Started (DatHost Match API Architecture - JS)");
 
     while (true) {
         try {
-            await verifyDeposits(supabase, provider);
-            await assignServers(supabase);
-            await checkAutoStart(supabase, escrow);
-            await checkForfeits(supabase, escrow);
-            await reconcileStuckPayouts(supabase, escrow, provider); // Also check in loop
-            await processPayouts(supabase, escrow);
+            await runJanitor();
         } catch (e) {
-            console.error("Loop Error:", e);
+            console.error("Janitor loop error:", e.message);
         }
-        await new Promise(r => setTimeout(r, 5000));
+        await new Promise(r => setTimeout(r, 30_000)); // Run every 30s
     }
 }
 
