@@ -1,17 +1,70 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { ethers } from 'ethers';
+import { maybeStartDatHostMatch } from '@/lib/maybeStartDatHostMatch';
 
 /**
  * POST /api/match/deposit
  * 
- * "Dumb" endpoint: Just saves the tx_hash to DB.
- * The Bot (payout_cron.js) will verify the hash on-chain.
+ * Saves the tx_hash to DB, verifies on-chain, and triggers DatHost match
+ * when both deposits are verified.
  */
 
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || "https://sepolia.base.org");
+
+// Escrow contract ABI for deposit verification
+const ESCROW_ABI = [
+    "event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount)"
+];
+
+async function verifyDepositOnChain(txHash: string, expectedPlayer: string): Promise<{ verified: boolean; error?: string }> {
+    try {
+        const receipt = await provider.getTransactionReceipt(txHash);
+
+        if (!receipt) {
+            return { verified: false, error: "Transaction not found or pending" };
+        }
+
+        if (receipt.status !== 1) {
+            return { verified: false, error: "Transaction reverted" };
+        }
+
+        // Optionally verify the Deposit event
+        const escrowAddress = process.env.ESCROW_ADDRESS || process.env.NEXT_PUBLIC_ESCROW_ADDRESS;
+        if (escrowAddress) {
+            const escrow = new ethers.Contract(escrowAddress, ESCROW_ABI, provider);
+            const depositEvents = receipt.logs
+                .filter(log => log.address.toLowerCase() === escrowAddress.toLowerCase())
+                .map(log => {
+                    try {
+                        return escrow.interface.parseLog({ topics: log.topics as string[], data: log.data });
+                    } catch {
+                        return null;
+                    }
+                })
+                .filter(e => e && e.name === "Deposit");
+
+            if (depositEvents.length === 0) {
+                return { verified: false, error: "No Deposit event found" };
+            }
+
+            // Verify the depositor matches expected player
+            const depositEvent = depositEvents[0];
+            if (depositEvent && depositEvent.args.player.toLowerCase() !== expectedPlayer.toLowerCase()) {
+                return { verified: false, error: "Deposit player mismatch" };
+            }
+        }
+
+        return { verified: true };
+    } catch (err: any) {
+        return { verified: false, error: err.message || "Verification failed" };
+    }
+}
 
 export async function POST(req: NextRequest) {
     try {
@@ -36,7 +89,7 @@ export async function POST(req: NextRequest) {
         }
 
         // 2. Check if match is still accepting deposits
-        if (!['LOBBY', 'DEPOSITING'].includes(match.status)) {
+        if (!['LOBBY', 'DEPOSITING', 'WAITING_FOR_DEPOSITS'].includes(match.status)) {
             return NextResponse.json({
                 error: `Match is ${match.status}. Cannot accept deposits.`
             }, { status: 400 });
@@ -50,41 +103,66 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "You are not a player in this match" }, { status: 403 });
         }
 
-        // 3. Check if already deposited
-        if (isPlayer1 && match.p1_tx_hash) {
-            return NextResponse.json({ error: "Player 1 already submitted deposit" }, { status: 400 });
-        }
-        if (isPlayer2 && match.p2_tx_hash) {
-            return NextResponse.json({ error: "Player 2 already submitted deposit" }, { status: 400 });
+        // 4. Check if already deposited
+        const txField = isPlayer1 ? 'p1_tx_hash' : 'p2_tx_hash';
+        const verifiedField = isPlayer1 ? 'p1_deposit_verified' : 'p2_deposit_verified';
+
+        if ((isPlayer1 && match.p1_deposit_verified) || (isPlayer2 && match.p2_deposit_verified)) {
+            return NextResponse.json({ error: "Already deposited and verified" }, { status: 400 });
         }
 
-        // 4. Save the tx_hash (Bot will verify on-chain)
-        const updateField = isPlayer1 ? 'p1_tx_hash' : 'p2_tx_hash';
-
-        // Only set deposit_started_at if this is the first deposit (status wasn't DEPOSITING yet)
+        // 5. Save tx_hash first
         const isFirstDeposit = match.status !== 'DEPOSITING';
-
-        const { error: updateError } = await supabase
+        await supabase
             .from('matches')
             .update({
-                [updateField]: txHash,
+                [txField]: txHash,
                 status: 'DEPOSITING',
                 ...(isFirstDeposit && { deposit_started_at: new Date().toISOString() })
             })
             .eq('id', matchId);
 
-        if (updateError) {
-            console.error("Failed to save tx_hash:", updateError);
-            return NextResponse.json({ error: "Failed to save transaction" }, { status: 500 });
+        console.log(`[Deposit API] Saved ${txField} for match ${matchId}: ${txHash}`);
+
+        // 6. Verify on-chain
+        const verification = await verifyDepositOnChain(txHash, walletAddress);
+
+        if (!verification.verified) {
+            console.log(`[Deposit API] Verification pending: ${verification.error}`);
+            return NextResponse.json({
+                success: true,
+                verified: false,
+                message: `Transaction saved. Verification: ${verification.error}`,
+                player: isPlayer1 ? 'player1' : 'player2',
+                txHash
+            });
         }
 
-        console.log(`[Deposit API] Saved ${updateField} for match ${matchId}: ${txHash}`);
+        // 7. Mark as verified
+        await supabase
+            .from('matches')
+            .update({ [verifiedField]: true })
+            .eq('id', matchId);
+
+        console.log(`[Deposit API] ✅ ${verifiedField} = true for match ${matchId}`);
+
+        // 8. Try to start DatHost match (if both verified)
+        const startResult = await maybeStartDatHostMatch(matchId);
+
+        if (startResult.started) {
+            console.log(`[Deposit API] 🚀 DatHost match started: ${startResult.dathost_match_id}`);
+        } else {
+            console.log(`[Deposit API] DatHost not started: ${startResult.reason}`);
+        }
 
         return NextResponse.json({
             success: true,
-            message: "Transaction hash saved. Bot will verify on-chain.",
+            verified: true,
+            message: "Deposit verified on-chain",
             player: isPlayer1 ? 'player1' : 'player2',
-            txHash
+            txHash,
+            dathostStarted: startResult.started,
+            dathostReason: startResult.reason
         });
 
     } catch (e: any) {
