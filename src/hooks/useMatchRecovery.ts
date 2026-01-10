@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
 import { useAccount } from 'wagmi';
 
 export function useMatchRecovery() {
@@ -9,40 +8,28 @@ export function useMatchRecovery() {
 
     useEffect(() => {
         async function checkActiveMatch() {
-            // Wait for wallet connection to be determined
-            // isConnected = false means "not connected"
-            // isConnected = undefined means "still checking"
-
             if (!isConnected) {
-                // If definitely not connected, stop loading
-                // They'll need to connect wallet first anyway
                 setLoading(false);
                 setRecoveredMatch(null);
                 return;
             }
 
             if (!address) {
-                // Connected but address not yet resolved - keep waiting
                 return;
             }
 
             console.log("[Recovery] Checking for active matches for:", address);
 
             try {
-                const { data, error } = await supabase
-                    .from('matches')
-                    .select('*')
-                    .or(`player1_address.eq.${address},player2_address.eq.${address}`)
-                    .in('status', ['LOBBY', 'DEPOSITING', 'PENDING', 'LIVE'])
-                    .order('created_at', { ascending: false })
-                    .limit(1)
-                    .maybeSingle();
+                // Use API route instead of direct Supabase query
+                const res = await fetch(`/api/match/active?wallet=${address}`);
+                const { match, error } = await res.json();
 
                 if (error) {
                     console.error("[Recovery] Error:", error);
-                } else if (data) {
-                    console.log("[Recovery] Found Active Match:", data);
-                    setRecoveredMatch(data);
+                } else if (match) {
+                    console.log("[Recovery] Found Active Match:", match);
+                    setRecoveredMatch(match);
                 } else {
                     console.log("[Recovery] No active match found.");
                     setRecoveredMatch(null);
@@ -54,7 +41,6 @@ export function useMatchRecovery() {
             setLoading(false);
         }
 
-        // Reset loading when address changes
         setLoading(true);
         checkActiveMatch();
     }, [address, isConnected]);

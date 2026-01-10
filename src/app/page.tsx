@@ -727,7 +727,11 @@ function ArcadeInterface() {
                                             onClick={async () => {
                                                 if (!confirm("Cancel this match?")) return;
                                                 setIsProcessing(true);
-                                                await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', matchData.id);
+                                                await fetch('/api/match/cancel', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ matchId: matchData.id, walletAddress: address })
+                                                });
                                                 alert("Match cancelled.");
                                                 window.location.reload();
                                             }}
@@ -875,7 +879,12 @@ function ArcadeInterface() {
                       <button 
                           onClick={async () => {
                               if(!confirm("Cancel this lobby?")) return;
-                              const { error } = await supabase.from('matches').update({ status: 'CANCELLED' }).eq('id', matchData.id);
+                              const res = await fetch('/api/match/cancel', {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ matchId: matchData.id, walletAddress: address })
+                              });
+                              const { error } = await res.json();
                               if (error) alert(error.message);
                               setMatchData(null);
                               window.history.pushState({}, '', window.location.pathname);
