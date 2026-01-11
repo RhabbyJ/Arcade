@@ -268,14 +268,12 @@ function ArcadeInterface() {
       if (isHost && bothReady && notDepositing && matchData.status === 'LOBBY') {
           console.log('🚀 Both ready! Auto-starting deposit phase...');
           const startDeposit = async () => {
-              const now = new Date().toISOString();
-              await supabase
-                  .from('matches')
-                  .update({ 
-                      status: 'DEPOSITING',
-                      deposit_started_at: now
-                  })
-                  .eq('id', matchData.id);
+              await fetch('/api/match/start-deposit', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ matchId: matchData.id })
+              });
           };
           startDeposit();
       }
@@ -293,41 +291,24 @@ function ArcadeInterface() {
       if (!steamData) return alert("Link Steam Account First!");
       setIsProcessing(true);
       
-      // DUPLICATE PREVENTION: Check if user already has an active match
-      const { data: existingMatch } = await supabase
-          .from('matches')
-          .select('*')
-          .or(`player1_address.eq.${address},player2_address.eq.${address}`)
-          .in('status', ['LOBBY', 'DEPOSITING', 'PENDING', 'LIVE'])
-          .limit(1)
-          .maybeSingle();
-
-      if (existingMatch) {
-          alert(`You already have an active match! (ID: ${existingMatch.contract_match_id})`);
-          setMatchData(existingMatch);
-          setIsProcessing(false);
-          return;
-      }
-      
-      const numericMatchId = Date.now();
-      
-      const { data, error } = await supabase
-        .from('matches')
-        .insert([{
-            player1_address: address,
-            player2_address: '0x0000000000000000000000000000000000000000',
-            status: 'LOBBY',
-            contract_match_id: numericMatchId,
-            payout_status: 'PENDING'
-        }])
-        .select()
-        .single();
-        
-      if (error) {
-          alert("Failed to create lobby: " + error.message);
-      } else {
-          setMatchData(data);
-          addLog(`Lobby Created (ID: ${numericMatchId})`);
+      try {
+          const res = await fetch('/api/match/create', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include'
+          });
+          
+          const data = await res.json();
+          
+          if (!res.ok) {
+              alert(data.error || "Failed to create lobby");
+              if (data.existingMatch) setMatchData(data.existingMatch);
+          } else {
+              setMatchData(data.match);
+              addLog(`Lobby Created (ID: ${data.match.contract_match_id})`);
+          }
+      } catch (e: any) {
+          alert("Failed to create lobby: " + e.message);
       }
       setIsProcessing(false);
   };
@@ -336,37 +317,24 @@ function ArcadeInterface() {
       if (!inviteMatchId) return;
       setIsProcessing(true);
       
-      // Find the match first to get the UUID
-      const { data: existingMatch, error: fetchError } = await supabase
-        .from('matches')
-        .select('*')
-        .eq('contract_match_id', inviteMatchId)
-        .single();
-
-      if (fetchError || !existingMatch) {
-          alert("Match not found!");
-          setIsProcessing(false);
-          return;
-      }
-
-      // Set ready_started_at when P2 joins to start the 45s countdown
-      const joinTime = new Date().toISOString();
-      const { data, error } = await supabase
-        .from('matches')
-        .update({ 
-            player2_address: address,
-            player2_steam: steamData?.id || null,
-            ready_started_at: joinTime  // Start the Ready Check timer
-        })
-        .eq('id', existingMatch.id)
-        .select()
-        .single();
-
-      if (error) {
-          alert("Failed to join: " + error.message);
-      } else {
-          setMatchData(data);
-          addLog("Joined Lobby! Ready Check started.");
+      try {
+          const res = await fetch('/api/match/join', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ matchId: inviteMatchId })
+          });
+          
+          const data = await res.json();
+          
+          if (!res.ok) {
+              alert(data.error || "Failed to join");
+          } else {
+              setMatchData(data.match);
+              addLog("Joined Lobby! Ready Check started.");
+          }
+      } catch (e: any) {
+          alert("Failed to join: " + e.message);
       }
       setIsProcessing(false);
   };
@@ -376,31 +344,28 @@ function ArcadeInterface() {
       if (!matchData) return;
       
       const isHost = matchData.player1_address?.toLowerCase() === address?.toLowerCase();
+      const msg = isHost ? "Cancel this match? Both players will be returned to lobby." : "Leave this match?";
       
-      if (isHost) {
-          // Host leaving = cancel the match
-          if (!confirm("Cancel this match? Both players will be returned to lobby.")) return;
-          await supabase
-              .from('matches')
-              .update({ status: 'CANCELLED' })
-              .eq('id', matchData.id);
-          setMatchData(null);
-          addLog("Match cancelled.");
-      } else {
-          // Guest leaving = remove P2, reset ready states
-          if (!confirm("Leave this match?")) return;
-          await supabase
-              .from('matches')
-              .update({ 
-                  player2_address: null,
-                  player2_steam: null,
-                  p1_ready: false,
-                  p2_ready: false,
-                  ready_started_at: null
-              })
-              .eq('id', matchData.id);
-          setMatchData(null);
-          addLog("Left the lobby.");
+      if (!confirm(msg)) return;
+      
+      try {
+          const res = await fetch('/api/match/leave', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ matchId: matchData.id })
+          });
+          
+          const data = await res.json();
+          
+          if (!res.ok) {
+              alert(data.error || "Failed to leave");
+          } else {
+              setMatchData(null);
+              addLog(data.message);
+          }
+      } catch (e: any) {
+          alert("Failed to leave: " + e.message);
       }
   };
 
@@ -436,21 +401,23 @@ function ArcadeInterface() {
 
   // 5. DEPOSIT
   const startDepositPhase = async () => {
-      const now = new Date().toISOString();
-      console.log("🚀 Starting Deposit Phase at:", now);
+      console.log("🚀 Starting Deposit Phase...");
       addLog("Starting Deposit Phase...");
-      const { error } = await supabase
-        .from('matches')
-        .update({ 
-            status: 'DEPOSITING',
-            deposit_started_at: now
-        })
-        .eq('id', matchData.id);
-      
-      if (error) {
-          console.error("❌ Failed to start deposit:", error);
-      } else {
-          console.log("✅ Deposit phase started, deposit_started_at:", now);
+      try {
+          const res = await fetch('/api/match/start-deposit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ matchId: matchData.id })
+          });
+          if (!res.ok) {
+              const data = await res.json();
+              console.error("❌ Failed to start deposit:", data.error);
+          } else {
+              console.log("✅ Deposit phase started");
+          }
+      } catch (e) {
+          console.error("❌ Failed to start deposit:", e);
       }
   };
 
@@ -458,19 +425,23 @@ function ArcadeInterface() {
   const handleReady = async () => {
       if (!address || !matchData) return;
       
-      const isHost = matchData.player1_address?.toLowerCase() === address.toLowerCase();
-      const readyField = isHost ? 'p1_ready' : 'p2_ready';
-      
-      console.log(`🎮 Setting ${readyField} to true`);
-      const { error } = await supabase
-          .from('matches')
-          .update({ [readyField]: true })
-          .eq('id', matchData.id);
-      
-      if (error) {
-          console.error("❌ Failed to set ready:", error);
-      } else {
-          addLog("You are READY!");
+      console.log(`🎮 Setting ready status...`);
+      try {
+          const res = await fetch('/api/match/ready', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'include',
+              body: JSON.stringify({ matchId: matchData.id })
+          });
+          
+          if (!res.ok) {
+              const data = await res.json();
+              console.error("❌ Failed to set ready:", data.error);
+          } else {
+              addLog("You are READY!");
+          }
+      } catch (e) {
+          console.error("❌ Failed to set ready:", e);
       }
   };
 
@@ -480,14 +451,7 @@ function ArcadeInterface() {
       addLog("Starting Deposit Sequence...");
 
       try {
-        // A. Save Steam ID
-        const isPlayer1 = matchData.player1_address === address;
-        const updateField = isPlayer1 ? 'player1_steam' : 'player2_steam';
-        
-        await supabase
-            .from('matches')
-            .update({ [updateField]: steamData.id })
-            .eq('id', matchData.id);
+        // Steam ID is already saved during create/join via API
 
         // B. Blockchain Transaction
         const walletProvider = await connector?.getProvider();
