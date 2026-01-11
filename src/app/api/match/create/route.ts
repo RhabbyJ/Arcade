@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
             .insert([{
                 player1_address: wallet,
                 player1_steam: steamId,
+                player2_address: '0x0000000000000000000000000000000000000000',
                 status: 'LOBBY',
                 contract_match_id: numericMatchId,
                 payout_status: 'PENDING'
