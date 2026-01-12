@@ -141,23 +141,15 @@ export async function POST(req: NextRequest) {
 
         console.log(`[Deposit API] ✅ ${verifiedField} = true for match ${matchId}`);
 
-        // 8. Try to start DatHost match (if both verified)
-        const startResult = await maybeStartDatHostMatch(matchId);
-
-        if (startResult.started) {
-            console.log(`[Deposit API] 🚀 DatHost match started: ${startResult.dathost_match_id}`);
-        } else {
-            console.log(`[Deposit API] DatHost not started: ${startResult.reason}`);
-        }
+        // 8. Bot will handle the rest (Verify + Start)
+        // We rely on the VPS bot as the Single Source of Truth to prevent race conditions.
 
         return NextResponse.json({
             success: true,
-            verified: true,
-            message: "Deposit verified on-chain",
+            verified: false, // Bot will verify
+            message: "Deposit saved. Waiting for network verification...",
             player: isPlayer1 ? 'player1' : 'player2',
-            txHash,
-            dathostStarted: startResult.started,
-            dathostReason: startResult.reason
+            txHash
         });
 
     } catch (e: any) {

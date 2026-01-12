@@ -49,6 +49,35 @@ const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const DATHOST_USER = process.env.DATHOST_USER || process.env.DATHOST_USERNAME;
 const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD;
 
+// --- Config Validation ---
+function checkEnv() {
+    const required = [
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_KEY",
+        "RPC_URL",
+        "ESCROW_ADDRESS",
+        "PAYOUT_PRIVATE_KEY",
+        "DATHOST_USER",
+        "DATHOST_PASS",
+        "DATHOST_SERVER_ID",  // Critical for starting matches
+        "DATHOST_WEBHOOK_SECRET",
+        "APP_URL"
+    ];
+
+    // Map alternate names
+    if (!process.env.SUPABASE_SERVICE_KEY && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+        console.warn("⚠️ WARNING: Using ANON KEY for bot operations. This is insecure and may fail RLS.");
+    }
+
+    const missing = required.filter(k => !process.env[k] && !process.env[k.replace("NEXT_PUBLIC_", "")]);
+    if (missing.length > 0) {
+        console.error("❌ CRITICAL: Missing required env vars:", missing.join(", "));
+        console.error("   The bot cannot function. Please update .env on VPS.");
+        process.exit(1);
+    }
+}
+checkEnv();
+
 const ESCROW_ABI = [
     "function distributeWinnings(bytes32 matchId, address winner) external",
     "function refundMatch(bytes32 matchId, address player) external",
@@ -332,6 +361,17 @@ async function processDeposits() {
         // Check if both verified -> START MATCH
         if (match.p1_deposit_verified && match.p2_deposit_verified) {
             await triggerMatchStart(match);
+        } else {
+            // Cleanup stuck DEPOSITING matches (e.g. 15 mins old and not verified)
+            const created = new Date(match.created_at).getTime();
+            const now = Date.now();
+            if (now - created > 15 * 60 * 1000) {
+                console.log(`[Bot] Match ${match.id} stuck in DEPOSITING > 15m. Cancelling.`);
+                await supabase.from("matches").update({
+                    status: "CANCELLED",
+                    payout_status: "TIMED_OUT"
+                }).eq("id", match.id);
+            }
         }
     }
 }
