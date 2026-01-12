@@ -47,10 +47,22 @@ export async function POST(req: NextRequest) {
 
         const updateCol = isPlayer1 ? 'p1_ready' : 'p2_ready';
 
+        // Prepare update
+        const updates: any = { [updateCol]: true };
+
+        // Check if OTHER player is already ready -> Transition to DEPOSITING
+        const otherPlayerReady = isPlayer1 ? match.p2_ready : match.p1_ready;
+
+        if (otherPlayerReady) {
+            console.log(`[Ready API] Both players ready! Transitioning to DEPOSITING...`);
+            updates.status = 'DEPOSITING';
+            updates.deposit_started_at = new Date().toISOString();
+        }
+
         // Toggle to TRUE (always set true when clicking Ready)
         const { data, error: updateError } = await supabaseAdmin
             .from('matches')
-            .update({ [updateCol]: true })
+            .update(updates)
             .eq('id', matchId)
             .select()
             .single();

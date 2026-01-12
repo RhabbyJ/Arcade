@@ -578,7 +578,7 @@ function ArcadeInterface() {
           );
       }
 
-      const isHost = matchData.player1_address === address;
+      const isHost = matchData.player1_address?.toLowerCase() === address?.toLowerCase();
       const hasP2 = matchData.player2_address && matchData.player2_address !== '0x0000000000000000000000000000000000000000';
       
       // UNIFIED LOBBY & DEPOSIT VIEW
@@ -722,8 +722,7 @@ function ArcadeInterface() {
                       ) : !isDepositing ? (
                           // READY CHECK PHASE (before deposit)
                           <div className="w-full max-w-md flex flex-col gap-4">
-                              {/* Ready Check Timer */}
-                              {matchData.ready_started_at && (
+                              {matchData.ready_started_at && !bothReady && (
                                   <div className="bg-yellow-900/20 border border-yellow-600/50 p-3 rounded-lg">
                                       <ReadyTimer startedAt={matchData.ready_started_at} />
                                   </div>
