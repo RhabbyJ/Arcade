@@ -116,12 +116,12 @@ async function startDatHostMatch(params) {
     const payload = {
         game_server_id: process.env.DATHOST_SERVER_ID,
         // match_group_id: params.matchId, // REMOVED: DatHost CS2 API rejects this
-        map: "de_dust2",
         players: [
             { steam_id_64: params.p1Steam64, team: "team1", name: "Player 1" },
             { steam_id_64: params.p2Steam64, team: "team2", name: "Player 2" },
         ],
         settings: {
+            map: "de_dust2",
             connect_time: 60,
             warmup_time: 15,
             match_begin_countdown: 5,
@@ -358,20 +358,21 @@ async function processDeposits() {
             Object.assign(match, updates);
         }
 
+        // Global Timeout Check (15 mins) - Runs even if verified but stuck
+        const created = new Date(match.created_at).getTime();
+        const now = Date.now();
+        if (now - created > 15 * 60 * 1000) {
+            console.log(`[Bot] Match ${match.id} timed out (>15m). Cancelling.`);
+            await supabase.from("matches").update({
+                status: "CANCELLED",
+                payout_status: "TIMED_OUT"
+            }).eq("id", match.id);
+            continue; // Skip to next match
+        }
+
         // Check if both verified -> START MATCH
         if (match.p1_deposit_verified && match.p2_deposit_verified) {
             await triggerMatchStart(match);
-        } else {
-            // Cleanup stuck DEPOSITING matches (e.g. 15 mins old and not verified)
-            const created = new Date(match.created_at).getTime();
-            const now = Date.now();
-            if (now - created > 15 * 60 * 1000) {
-                console.log(`[Bot] Match ${match.id} stuck in DEPOSITING > 15m. Cancelling.`);
-                await supabase.from("matches").update({
-                    status: "CANCELLED",
-                    payout_status: "TIMED_OUT"
-                }).eq("id", match.id);
-            }
         }
     }
 }
