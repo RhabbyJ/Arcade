@@ -493,7 +493,8 @@ async function runJanitor() {
         let winnerTeam = null;
 
         // Log full response for debugging
-        console.log(`   📡 DatHost Full Response: ${JSON.stringify(dh, null, 2).slice(0, 500)}`);
+        console.log(`   📡 DatHost Keys: ${Object.keys(dh).join(', ')}`);
+        console.log(`   📡 DatHost Full Response: ${JSON.stringify(dh, null, 2).slice(0, 2000)}`);
         console.log(`   📡 DatHost Response: match_status=${dh.match_status}, winning_team=${dh.winning_team}`);
 
         if (dh.notFound) {
