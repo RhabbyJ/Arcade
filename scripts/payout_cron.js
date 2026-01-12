@@ -488,22 +488,41 @@ async function runJanitor() {
             continue;
         }
 
-        // Decide action
+        // Decide action based on DatHost match_status (not 'status')
         let target = null;
         let winnerTeam = null;
+
+        // Log full response for debugging
+        console.log(`   📡 DatHost Response: match_status=${dh.match_status}, winning_team=${dh.winning_team}`);
 
         if (dh.notFound) {
             console.log(`   ℹ️ Match not found in DatHost -> refund`);
             target = "REFUND";
-        } else if (dh.status === "cancelled") {
+        } else if (dh.match_status === "canceled") {
             console.log(`   ℹ️ Match cancelled in DatHost -> refund`);
             target = "REFUND";
-        } else if (dh.status === "ended" && dh.winner) {
-            console.log(`   ℹ️ Match ended in DatHost -> payout to ${dh.winner}`);
+        } else if (dh.match_status === "ended" && dh.winning_team) {
+            console.log(`   ℹ️ Match ended in DatHost -> payout to ${dh.winning_team}`);
             target = "PAYOUT";
-            winnerTeam = dh.winner;
+            winnerTeam = dh.winning_team;
+        } else if (dh.match_status === "warmup" || dh.match_status === "live" || dh.match_status === "knife") {
+            // Match is still in progress - update our status to LIVE if needed
+            if (match.status !== "LIVE") {
+                console.log(`   ℹ️ DatHost match is ${dh.match_status} -> updating to LIVE`);
+                await supabase.from("matches").update({
+                    status: "LIVE",
+                    server_ip: dh.game_server?.ip,
+                    server_port: dh.game_server?.game_port,
+                    connect_password: dh.connect_password || dh.server_password,
+                }).eq("id", match.id);
+            }
+            continue;
+        } else if (dh.match_status === "waiting_for_players" || dh.match_status === "starting") {
+            // Still booting - just skip
+            console.log(`   ℹ️ DatHost status: ${dh.match_status} - still booting, skipping`);
+            continue;
         } else {
-            console.log(`   ℹ️ DatHost status: ${dh.status} - skipping`);
+            console.log(`   ℹ️ DatHost status: ${dh.match_status} - unknown state, skipping`);
             continue;
         }
 

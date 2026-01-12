@@ -863,6 +863,39 @@ function ArcadeInterface() {
           );
       }
 
+      // VIEW_BOOTING
+      if (matchData.status === 'STARTING_MATCH' || matchData.status === 'DATHOST_BOOTING') {
+          return (
+              <div className="bg-gray-800 p-12 rounded-xl border border-blue-500/50 shadow-[0_0_30px_rgba(59,130,246,0.2)] w-full max-w-lg text-center">
+                  <div className="relative w-24 h-24 mx-auto mb-6">
+                        <div className="absolute inset-0 border-4 border-blue-500/30 rounded-full"></div>
+                        <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                        <div className="absolute inset-0 flex items-center justify-center text-3xl">🚀</div>
+                  </div>
+                  
+                  <h2 className="text-3xl font-black text-white mb-2 tracking-tight">SERVER BOOTING</h2>
+                  <p className="text-blue-400 font-medium animate-pulse mb-6">Allocating high-tickrate server...</p>
+                  
+                  <div className="bg-black/50 p-4 rounded-lg text-left space-y-2 font-mono text-sm border border-gray-700">
+                      <div className="flex justify-between">
+                          <span className="text-gray-500">Status</span>
+                          <span className="text-yellow-400">{matchData.status === 'STARTING_MATCH' ? 'VERIFYING...' : 'INITIALIZING'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                          <span className="text-gray-500">Region</span>
+                          <span className="text-white">US-East (Chicago)</span>
+                      </div>
+                      {matchData.dathost_match_id && (
+                          <div className="flex justify-between">
+                              <span className="text-gray-500">Session ID</span>
+                              <span className="text-gray-400">{matchData.dathost_match_id}</span>
+                          </div>
+                      )}
+                  </div>
+              </div>
+          );
+      }
+
       // VIEW_LIVE
       if (matchData.status === 'LIVE') {
           return (
