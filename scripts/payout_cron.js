@@ -122,9 +122,9 @@ async function startDatHostMatch(params) {
         ],
         settings: {
             map: "de_dust2",
-            connect_time: 60,
-            warmup_time: 15,
-            match_begin_countdown: 5,
+            // connection_time: 60, // Removing to avoid schema errors. Use server defaults.
+            // warmup_time: 15,
+            // match_begin_countdown: 5,
         },
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
