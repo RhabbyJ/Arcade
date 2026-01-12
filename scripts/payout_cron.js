@@ -39,6 +39,7 @@ const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS || process.env.NEXT_PUBLIC_ESC
 const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
 const DATHOST_USER = process.env.DATHOST_USER || process.env.DATHOST_USERNAME;
 const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD;
+const APP_URL = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL;
 
 // --- Config Validation ---
 function checkEnv() {
@@ -126,7 +127,7 @@ async function startDatHostMatch(params) {
             match_begin_countdown: 5,
         },
         webhooks: {
-            event_url: `${process.env.APP_URL}/api/webhook/dathost`,
+            event_url: `${APP_URL}/api/webhook/dathost`,
             authorization_header: `Bearer ${process.env.DATHOST_WEBHOOK_SECRET}`,
             enabled_events: ["match_started", "match_ended", "match_cancelled"],
         },
