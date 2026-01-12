@@ -95,7 +95,7 @@ const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PAYOUT_PRIVATE_KEY, provider);
 const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-const FINALIZED = ["PROCESSING", "PAID", "REFUND_PROCESSING", "REFUNDED"];
+const FINALIZED = ["PAID", "REFUND_PROCESSING", "REFUNDED"];
 
 // --- DatHost API ---
 
@@ -413,22 +413,43 @@ async function triggerMatchStart(match) {
             p2Steam64: match.player2_steam
         });
 
+        // Build connection command - use the known server hostname
+        // DatHost server: blindspot.dathost.net:26893
+        const serverConnect = `connect blindspot.dathost.net:26893`;
+
         await supabase.from("matches").update({
             dathost_match_id: dh.id,
             status: "DATHOST_BOOTING",
             dathost_status_snapshot: dh,
+            server_connect: serverConnect,
+            start_attempts: (match.start_attempts || 0) + 1,
         }).eq("id", match.id);
 
         console.log(`   🚀 Match started! DatHost ID: ${dh.id}`);
+        console.log(`   🎮 Connect: ${serverConnect}`);
 
     } catch (e) {
         console.error(`   ❌ Start failed: ${e.message}`);
-        // Revert
-        await supabase.from("matches").update({
-            status: "DEPOSITING", // Go back to depositing so we retry?
-            match_start_lock_id: null,
-            last_settlement_error: `Bot start failed: ${e.message}`
-        }).eq("id", match.id);
+        const attempts = (match.start_attempts || 0) + 1;
+
+        // After 3 failed attempts, mark as START_FAILED (terminal)
+        if (attempts >= 3) {
+            console.log(`   ❌ Max attempts (${attempts}) reached - marking START_FAILED`);
+            await supabase.from("matches").update({
+                status: "START_FAILED",
+                match_start_lock_id: null,
+                start_attempts: attempts,
+                last_settlement_error: `Bot start failed after ${attempts} attempts: ${e.message}`
+            }).eq("id", match.id);
+        } else {
+            // Revert to retry later
+            await supabase.from("matches").update({
+                status: "DEPOSITING",
+                match_start_lock_id: null,
+                start_attempts: attempts,
+                last_settlement_error: `Bot start failed: ${e.message}`
+            }).eq("id", match.id);
+        }
     }
 }
 
@@ -436,14 +457,23 @@ async function triggerMatchStart(match) {
 
 async function acquireLock(matchId) {
     const lockId = require('crypto').randomUUID();
+    const now = new Date();
+    const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
+
+    // Try to acquire lock - allow if:
+    // 1. payout_status is not finalized (PAID, REFUNDED, etc)
+    // 2. OR settlement_lock_id is null (never locked)
+    // 3. OR updated_at is older than 2 minutes (stale lock)
     const { data } = await supabase
         .from("matches")
         .update({
             payout_status: "PROCESSING",
             settlement_lock_id: lockId,
+            updated_at: now.toISOString(),
         })
         .eq("id", matchId)
         .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
+        .or(`settlement_lock_id.is.null,updated_at.lt.${twoMinutesAgo}`)
         .select()
         .maybeSingle();
 

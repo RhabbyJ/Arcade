@@ -865,6 +865,8 @@ function ArcadeInterface() {
 
       // VIEW_BOOTING
       if (matchData.status === 'STARTING_MATCH' || matchData.status === 'DATHOST_BOOTING') {
+          const connectCommand = matchData.server_connect || 'connect blindspot.dathost.net:26893';
+          
           return (
               <div className="bg-gray-800 p-12 rounded-xl border border-blue-500/50 shadow-[0_0_30px_rgba(59,130,246,0.2)] w-full max-w-lg text-center">
                   <div className="relative w-24 h-24 mx-auto mb-6">
@@ -873,17 +875,32 @@ function ArcadeInterface() {
                         <div className="absolute inset-0 flex items-center justify-center text-3xl">🚀</div>
                   </div>
                   
-                  <h2 className="text-3xl font-black text-white mb-2 tracking-tight">SERVER BOOTING</h2>
-                  <p className="text-blue-400 font-medium animate-pulse mb-6">Allocating high-tickrate server...</p>
+                  <h2 className="text-3xl font-black text-white mb-2 tracking-tight">SERVER READY</h2>
+                  <p className="text-green-400 font-medium mb-6">Open CS2 Console and paste the command below!</p>
                   
-                  <div className="bg-black/50 p-4 rounded-lg text-left space-y-2 font-mono text-sm border border-gray-700">
+                  {/* Connect Command Box */}
+                  <div className="bg-black p-4 rounded-lg font-mono text-sm border border-green-500 mb-4">
+                      <p className="text-green-400 break-all">{connectCommand}</p>
+                  </div>
+                  
+                  <button
+                      onClick={() => {
+                          navigator.clipboard.writeText(connectCommand);
+                          alert('Copied to clipboard!');
+                      }}
+                      className="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded-lg w-full mb-4 transition-all"
+                  >
+                      📋 COPY CONNECT COMMAND
+                  </button>
+                  
+                  <div className="bg-black/50 p-4 rounded-lg text-left space-y-2 font-mono text-xs border border-gray-700">
                       <div className="flex justify-between">
                           <span className="text-gray-500">Status</span>
-                          <span className="text-yellow-400">{matchData.status === 'STARTING_MATCH' ? 'VERIFYING...' : 'INITIALIZING'}</span>
+                          <span className="text-yellow-400">{matchData.status === 'STARTING_MATCH' ? 'VERIFYING...' : 'WAITING FOR PLAYERS'}</span>
                       </div>
                       <div className="flex justify-between">
                           <span className="text-gray-500">Region</span>
-                          <span className="text-white">US-East (Chicago)</span>
+                          <span className="text-white">US-West (Los Angeles)</span>
                       </div>
                       {matchData.dathost_match_id && (
                           <div className="flex justify-between">
