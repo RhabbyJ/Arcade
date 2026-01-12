@@ -117,8 +117,8 @@ async function startDatHostMatch(params) {
         game_server_id: process.env.DATHOST_SERVER_ID,
         // match_group_id: params.matchId, // REMOVED: DatHost CS2 API rejects this
         players: [
-            { steam_id_64: params.p1Steam64, team: "team1", name: "Player 1" },
-            { steam_id_64: params.p2Steam64, team: "team2", name: "Player 2" },
+            { steam_id_64: params.p1Steam64, team: "team1", nickname_override: "Player 1" },
+            { steam_id_64: params.p2Steam64, team: "team2", nickname_override: "Player 2" },
         ],
         settings: {
             map: "de_dust2",
