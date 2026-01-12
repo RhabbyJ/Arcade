@@ -51,27 +51,35 @@ const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD;
 
 // --- Config Validation ---
 function checkEnv() {
-    const required = [
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_KEY",
-        "RPC_URL",
-        "ESCROW_ADDRESS",
-        "PAYOUT_PRIVATE_KEY",
-        "DATHOST_USER",
-        "DATHOST_PASS",
-        "DATHOST_SERVER_ID",  // Critical for starting matches
-        "DATHOST_WEBHOOK_SECRET",
-        "APP_URL"
+    // Defines [Primary, Alternate] pairs
+    const checks = [
+        ["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"],
+        ["SUPABASE_SERVICE_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"],
+        ["RPC_URL"],
+        ["ESCROW_ADDRESS", "NEXT_PUBLIC_ESCROW_ADDRESS"],
+        ["PAYOUT_PRIVATE_KEY"],
+        ["DATHOST_USER", "DATHOST_USERNAME"],
+        ["DATHOST_PASS", "DATHOST_PASSWORD"],
+        ["DATHOST_SERVER_ID"],
+        ["DATHOST_WEBHOOK_SECRET"],
+        ["APP_URL", "NEXT_PUBLIC_APP_URL"]
     ];
 
-    // Map alternate names
     if (!process.env.SUPABASE_SERVICE_KEY && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         console.warn("⚠️ WARNING: Using ANON KEY for bot operations. This is insecure and may fail RLS.");
     }
 
-    const missing = required.filter(k => !process.env[k] && !process.env[k.replace("NEXT_PUBLIC_", "")]);
+    const missing = [];
+    for (const pair of checks) {
+        // Check if at least one key in the pair is present
+        const found = pair.some(key => !!process.env[key]);
+        if (!found) {
+            missing.push(pair[0]);
+        }
+    }
+
     if (missing.length > 0) {
-        console.error("❌ CRITICAL: Missing required env vars:", missing.join(", "));
+        console.error("❌ CRITICAL: Missing required env vars (or their alternates):", missing.join(", "));
         console.error("   The bot cannot function. Please update .env on VPS.");
         process.exit(1);
     }
