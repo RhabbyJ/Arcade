@@ -363,10 +363,16 @@ async function processDeposits() {
         const now = Date.now();
         if (now - created > 15 * 60 * 1000) {
             console.log(`[Bot] Match ${match.id} timed out (>15m). Cancelling.`);
-            await supabase.from("matches").update({
+            const { error: cancelError } = await supabase.from("matches").update({
                 status: "CANCELLED",
                 payout_status: "TIMED_OUT"
             }).eq("id", match.id);
+
+            if (cancelError) {
+                console.error(`   ❌ Failed to cancel match ${match.id}:`, cancelError);
+            } else {
+                console.log(`   ✅ Match ${match.id} cancelled successfully.`);
+            }
             continue; // Skip to next match
         }
 
