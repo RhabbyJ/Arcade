@@ -40,7 +40,7 @@ export async function maybeStartDatHostMatch(matchId: string) {
 
     // 2) Acquire start lock atomically
     const lockId = crypto.randomUUID();
-    const { data: locked } = await supabaseAdmin
+    const { data: locked, error: errorLocked } = await supabaseAdmin
         .from("matches")
         .update({
             match_start_lock_id: lockId,
@@ -50,7 +50,13 @@ export async function maybeStartDatHostMatch(matchId: string) {
         .is("dathost_match_id", null)
         .in("status", ["DEPOSITING", "WAITING_FOR_DEPOSITS", "READY_TO_START"])
         .select()
+        .select()
         .maybeSingle();
+
+    if (errorLocked) {
+        console.error("[maybeStartDatHost] Lock update error:", errorLocked);
+        return { started: false, reason: "lock_db_error", error: errorLocked.message };
+    }
 
     if (!locked) {
         return { started: false, reason: "lock_failed_or_race" };
