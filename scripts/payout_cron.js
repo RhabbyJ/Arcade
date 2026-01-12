@@ -129,7 +129,7 @@ async function startDatHostMatch(params) {
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
             authorization_header: `Bearer ${process.env.DATHOST_WEBHOOK_SECRET}`,
-            enabled_events: ["match_started", "match_ended", "match_cancelled"],
+            enabled_events: ["match_started", "match_ended", "match_canceled"],
         },
     };
 
