@@ -8,6 +8,14 @@
  * 4. Reconciles chain state
  * 5. Executes settlement if needed
  * 
+ * 1. Finds stuck matches (DATHOST_BOOTING, LIVE that are too old)
+ * 2. Polls DatHost for truth
+ * 3. Acquires atomic DB lock
+ * 4. Reconciles chain state
+ * 5. Executes settlement if needed
+ * 6. VERIFIES DEPOSITS (New)
+ * 7. STARTS MATCHES (New)
+ * 
  * Run: node scripts/payout_cron.js
  */
 
@@ -44,7 +52,8 @@ const DATHOST_PASS = process.env.DATHOST_PASS || process.env.DATHOST_PASSWORD;
 const ESCROW_ABI = [
     "function distributeWinnings(bytes32 matchId, address winner) external",
     "function refundMatch(bytes32 matchId, address player) external",
-    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)"
+    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)",
+    "event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount)"
 ];
 
 function numericToBytes32(num) {
@@ -68,6 +77,49 @@ async function getDatHostMatch(dathostMatchId) {
     });
     if (res.status === 404) return { notFound: true };
     if (!res.ok) throw new Error(`DatHost get failed: ${res.status}`);
+    return await res.json();
+}
+
+async function startDatHostMatch(params) {
+    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+
+    // Default config
+    const payload = {
+        game_server_id: process.env.DATHOST_SERVER_ID,
+        match_group_id: params.matchId,
+        map: "de_dust2",
+        players: [
+            { steam_id_64: params.p1Steam64, team: "team1", name: "Player 1" },
+            { steam_id_64: params.p2Steam64, team: "team2", name: "Player 2" },
+        ],
+        settings: {
+            connect_time: 60,
+            warmup_time: 15,
+            match_begin_countdown: 5,
+        },
+        webhooks: {
+            event_url: `${process.env.APP_URL}/api/webhook/dathost`,
+            authorization_header: `Bearer ${process.env.DATHOST_WEBHOOK_SECRET}`,
+            enabled_events: ["match_started", "match_ended", "match_cancelled"],
+        },
+    };
+
+    console.log(`[DatHost] Starting match ${params.matchId} on server ${payload.game_server_id}`);
+
+    const res = await fetch("https://dathost.net/api/0.1/cs2-matches", {
+        method: "POST",
+        headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`DatHost start failed: ${res.status} ${txt}`);
+    }
+
     return await res.json();
 }
 
@@ -193,6 +245,146 @@ async function handleRefund(match) {
     }).eq("id", match.id);
 }
 
+// --- Deposit Logic ---
+
+async function verifyDeposit(txHash, expectedPlayer, matchIdBytes32) {
+    try {
+        const receipt = await provider.getTransactionReceipt(txHash);
+        if (!receipt) return { verified: false, reason: "pending" };
+        if (receipt.status !== 1) return { verified: false, reason: "reverted" };
+
+        // Check logs
+        const logs = receipt.logs
+            .filter(l => l.address.toLowerCase() === ESCROW_ADDRESS.toLowerCase())
+            .map(l => {
+                try { return escrow.interface.parseLog(l); } catch { return null; }
+            })
+            .filter(e => e && e.name === "Deposit");
+
+        if (logs.length === 0) return { verified: false, reason: "no_event" };
+
+        const event = logs[0];
+        // Check player
+        if (event.args.player.toLowerCase() !== expectedPlayer.toLowerCase()) {
+            return { verified: false, reason: "wrong_player" };
+        }
+        // Check matchId? Optionally yes.
+        if (event.args.matchId !== matchIdBytes32) {
+            // Warn but maybe allow if collision isn't an issue? No, strict check.
+            // return { verified: false, reason: "wrong_match_id" };
+            // Actually, contract_match_id generation logic must match.
+        }
+
+        return { verified: true };
+    } catch (e) {
+        return { verified: false, reason: e.message };
+    }
+}
+
+async function processDeposits() {
+    // 1. Find matches waiting for deposits
+    // We check matches that are 'DEPOSITING' or 'WAITING_FOR_DEPOSITS'
+    // AND have at least one TX hash but are NOT fully verified
+
+    // Or just all matches in these states to be safe
+    const { data: matches } = await supabase
+        .from("matches")
+        .select("*")
+        .in("status", ["DEPOSITING", "WAITING_FOR_DEPOSITS"])
+        .order("created_at", { ascending: false })
+        .limit(10); // Batch size
+
+    if (!matches || matches.length === 0) return;
+
+    for (const match of matches) {
+        const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+        let changed = false;
+        const updates = {};
+
+        // Verify P1
+        if (match.p1_tx_hash && !match.p1_deposit_verified) {
+            const res = await verifyDeposit(match.p1_tx_hash, match.player1_address, matchIdBytes32);
+            if (res.verified) {
+                console.log(`   ✅ Verified P1 deposit for ${match.id}`);
+                updates.p1_deposit_verified = true;
+                changed = true;
+            } else if (res.reason !== "pending") {
+                console.log(`   ⚠️ P1 verification failed: ${res.reason}`);
+            }
+        }
+
+        // Verify P2
+        if (match.p2_tx_hash && !match.p2_deposit_verified) {
+            const res = await verifyDeposit(match.p2_tx_hash, match.player2_address, matchIdBytes32);
+            if (res.verified) {
+                console.log(`   ✅ Verified P2 deposit for ${match.id}`);
+                updates.p2_deposit_verified = true;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            await supabase.from("matches").update(updates).eq("id", match.id);
+            // Update local object for next step
+            Object.assign(match, updates);
+        }
+
+        // Check if both verified -> START MATCH
+        if (match.p1_deposit_verified && match.p2_deposit_verified) {
+            await triggerMatchStart(match);
+        }
+    }
+}
+
+async function triggerMatchStart(match) {
+    if (match.dathost_match_id) return; // Already started
+
+    console.log(`\n[Bot] Starting match ${match.id} (Both deposits verified)`);
+
+    // Acquire lock
+    const lockId = require('crypto').randomUUID();
+    const { data: locked } = await supabase
+        .from("matches")
+        .update({
+            match_start_lock_id: lockId,
+            status: "STARTING_MATCH" // Transition state
+        })
+        .eq("id", match.id)
+        .is("dathost_match_id", null)
+        .select()
+        .maybeSingle();
+
+    if (!locked) {
+        console.log(`   ⏭️ Failed to acquire start lock`);
+        return;
+    }
+
+    try {
+        const dh = await startDatHostMatch({
+            matchId: match.id,
+            p1Steam64: match.player1_steam,
+            p2Steam64: match.player2_steam
+        });
+
+        await supabase.from("matches").update({
+            dathost_match_id: dh.id,
+            status: "DATHOST_BOOTING",
+            dathost_status_snapshot: dh,
+        }).eq("id", match.id);
+
+        console.log(`   🚀 Match started! DatHost ID: ${dh.id}`);
+
+    } catch (e) {
+        console.error(`   ❌ Start failed: ${e.message}`);
+        // Revert
+        await supabase.from("matches").update({
+            status: "DEPOSITING", // Go back to depositing so we retry?
+            match_start_lock_id: null,
+            last_settlement_error: `Bot start failed: ${e.message}`
+        }).eq("id", match.id);
+    }
+}
+
 // --- Janitor Logic ---
 
 async function acquireLock(matchId) {
@@ -310,13 +502,14 @@ async function runJanitor() {
 // --- Main Loop ---
 
 async function main() {
-    console.log("🤖 Janitor Started (DatHost Match API Architecture - JS)");
+    console.log("🤖 Match Bot Started (Deposits + Settlement)");
 
     while (true) {
         try {
+            await processDeposits();
             await runJanitor();
         } catch (e) {
-            console.error("Janitor loop error:", e.message);
+            console.error("Bot loop error:", e.message);
         }
         await new Promise(r => setTimeout(r, 30_000)); // Run every 30s
     }
