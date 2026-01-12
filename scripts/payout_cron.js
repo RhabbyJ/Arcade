@@ -1,20 +1,11 @@
 /**
- * Janitor Cron - Settlement Reconciliation (DatHost Match API)
+ * Match Bot - Deposits, Starts, & Settlement
  * 
- * This script:
- * 1. Finds stuck matches (DATHOST_BOOTING, LIVE that are too old)
- * 2. Polls DatHost for truth
- * 3. Acquires atomic DB lock
- * 4. Reconciles chain state
- * 5. Executes settlement if needed
- * 
- * 1. Finds stuck matches (DATHOST_BOOTING, LIVE that are too old)
- * 2. Polls DatHost for truth
- * 3. Acquires atomic DB lock
- * 4. Reconciles chain state
- * 5. Executes settlement if needed
- * 6. VERIFIES DEPOSITS (New)
- * 7. STARTS MATCHES (New)
+ * Responsibilities:
+ * 1. Verifies Deposits (on-chain -> DB)
+ * 2. Starts DatHost Server (Single Source of Truth)
+ * 3. Polling & Reconciliation (DatHost -> DB)
+ * 4. Payouts (DB -> Chain)
  * 
  * Run: node scripts/payout_cron.js
  */
@@ -123,7 +114,7 @@ async function startDatHostMatch(params) {
     // Default config
     const payload = {
         game_server_id: process.env.DATHOST_SERVER_ID,
-        match_group_id: params.matchId,
+        // match_group_id: params.matchId, // REMOVED: DatHost CS2 API rejects this
         map: "de_dust2",
         players: [
             { steam_id_64: params.p1Steam64, team: "team1", name: "Player 1" },
