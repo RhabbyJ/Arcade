@@ -364,8 +364,8 @@ async function processDeposits() {
         if (now - created > 15 * 60 * 1000) {
             console.log(`[Bot] Match ${match.id} timed out (>15m). Cancelling.`);
             const { error: cancelError } = await supabase.from("matches").update({
-                status: "CANCELLED",
-                payout_status: "TIMED_OUT"
+                status: "CANCELLED"
+                // payout_status: "TIMED_OUT" // REMOVED: Invalid Enum Value. Leave as PENDING (manual refund needed).
             }).eq("id", match.id);
 
             if (cancelError) {
