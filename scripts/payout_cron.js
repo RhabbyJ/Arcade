@@ -494,37 +494,48 @@ async function runJanitor() {
 
         // Log full response for debugging
         console.log(`   📡 DatHost Keys: ${Object.keys(dh).join(', ')}`);
-        console.log(`   📡 DatHost Full Response: ${JSON.stringify(dh, null, 2).slice(0, 2000)}`);
-        console.log(`   📡 DatHost Response: match_status=${dh.match_status}, winning_team=${dh.winning_team}`);
+        console.log(`   📡 finished=${dh.finished}, cancel_reason=${dh.cancel_reason}, rounds_played=${dh.rounds_played}`);
 
         if (dh.notFound) {
             console.log(`   ℹ️ Match not found in DatHost -> refund`);
             target = "REFUND";
-        } else if (dh.match_status === "canceled") {
-            console.log(`   ℹ️ Match cancelled in DatHost -> refund`);
+        } else if (dh.cancel_reason) {
+            // Match was cancelled
+            console.log(`   ℹ️ Match cancelled in DatHost (${dh.cancel_reason}) -> refund`);
             target = "REFUND";
-        } else if (dh.match_status === "ended" && dh.winning_team) {
-            console.log(`   ℹ️ Match ended in DatHost -> payout to ${dh.winning_team}`);
-            target = "PAYOUT";
-            winnerTeam = dh.winning_team;
-        } else if (dh.match_status === "warmup" || dh.match_status === "live" || dh.match_status === "knife") {
-            // Match is still in progress - update our status to LIVE if needed
-            if (match.status !== "LIVE") {
-                console.log(`   ℹ️ DatHost match is ${dh.match_status} -> updating to LIVE`);
+        } else if (dh.finished === true) {
+            // Match ended - determine winner by team scores
+            const team1Score = dh.team1?.stats?.score || 0;
+            const team2Score = dh.team2?.stats?.score || 0;
+
+            if (team1Score > team2Score) {
+                console.log(`   ℹ️ Match ended: team1 wins ${team1Score}-${team2Score} -> payout`);
+                target = "PAYOUT";
+                winnerTeam = "team1";
+            } else if (team2Score > team1Score) {
+                console.log(`   ℹ️ Match ended: team2 wins ${team2Score}-${team1Score} -> payout`);
+                target = "PAYOUT";
+                winnerTeam = "team2";
+            } else {
+                // Tie (unlikely in CS) - refund
+                console.log(`   ℹ️ Match ended in tie ${team1Score}-${team2Score} -> refund`);
+                target = "REFUND";
+            }
+        } else {
+            // Match not finished - check if players are connected
+            const anyConnected = dh.players?.some(p => p.connected === true);
+
+            if (anyConnected && match.status !== "LIVE") {
+                // At least one player connected - update to LIVE
+                console.log(`   ℹ️ Players connected, updating to LIVE`);
                 await supabase.from("matches").update({
                     status: "LIVE",
-                    server_ip: dh.game_server?.ip,
-                    server_port: dh.game_server?.game_port,
-                    connect_password: dh.connect_password || dh.server_password,
                 }).eq("id", match.id);
+            } else if (!anyConnected) {
+                console.log(`   ℹ️ Waiting for players to connect (finished=${dh.finished}), skipping`);
+            } else {
+                console.log(`   ℹ️ Match in progress, skipping`);
             }
-            continue;
-        } else if (dh.match_status === "waiting_for_players" || dh.match_status === "starting") {
-            // Still booting - just skip
-            console.log(`   ℹ️ DatHost status: ${dh.match_status} - still booting, skipping`);
-            continue;
-        } else {
-            console.log(`   ℹ️ DatHost status: ${dh.match_status} - unknown state, skipping`);
             continue;
         }
 
