@@ -30,7 +30,7 @@ create table if not exists game_servers (
   created_at timestamp with time zone default now(),
   
   -- DatHost Info
-  dathost_id text not null, -- The ID from DatHost (e.g., "65a1b2c3...")
+  dathost_id text not null unique, -- The ID from DatHost (e.g., "65a1b2c3...")
   name text not null,       -- e.g., "Server A"
   ip text not null,         -- e.g., "1.2.3.4"
   port int not null,        -- e.g., 27015

@@ -114,17 +114,16 @@ async function startDatHostMatch(params) {
 
     // Default config
     const payload = {
-        game_server_id: process.env.DATHOST_SERVER_ID,
-        // match_group_id: params.matchId, // REMOVED: DatHost CS2 API rejects this
+        game_server_id: params.gameServerId,
         players: [
             { steam_id_64: params.p1Steam64, team: "team1", nickname_override: "Player 1" },
             { steam_id_64: params.p2Steam64, team: "team2", nickname_override: "Player 2" },
         ],
         settings: {
             map: "de_dust2",
-            // connection_time: 60, // Removing to avoid schema errors. Use server defaults.
-            // warmup_time: 15,
-            // match_begin_countdown: 5,
+            connect_time: 300,        // 5 mins to connect
+            warmup_time: 15,          // 15s warmup -> AUTO START. No .ready needed.
+            match_begin_countdown: 5,
         },
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
@@ -386,39 +385,38 @@ async function processDeposits() {
 async function triggerMatchStart(match) {
     if (match.dathost_match_id) return; // Already started
 
-    console.log(`\n[Bot] Starting match ${match.id} (Both deposits verified)`);
+    console.log(`\n[Bot] Attempting to start Match ${match.id}...`);
 
-    // Acquire lock
-    const lockId = require('crypto').randomUUID();
-    const { data: locked } = await supabase
-        .from("matches")
-        .update({
-            match_start_lock_id: lockId,
-            status: "STARTING_MATCH" // Transition state
-        })
-        .eq("id", match.id)
-        .is("dathost_match_id", null)
+    // 1. LEASE A SERVER from the pool
+    const { data: server, error: serverError } = await supabase
+        .from('game_servers')
+        .update({ status: 'BUSY', current_match_id: match.id, last_heartbeat: new Date().toISOString() })
+        .eq('status', 'FREE')
+        .is('current_match_id', null)
         .select()
         .maybeSingle();
 
-    if (!locked) {
-        console.log(`   ⏭️ Failed to acquire start lock`);
+    if (!server) {
+        console.log(`   ⏳ No FREE servers available. Retrying next loop...`);
         return;
     }
 
+    console.log(`   ✅ Acquired Server: ${server.name} (${server.dathost_id})`);
+
+    // 2. Start DatHost with dynamic server
     try {
         const dh = await startDatHostMatch({
+            gameServerId: server.dathost_id,
             matchId: match.id,
             p1Steam64: match.player1_steam,
             p2Steam64: match.player2_steam
         });
 
-        // Build connection command - use the known server hostname
-        // DatHost server: blindspot.dathost.net:26893
-        const serverConnect = `connect blindspot.dathost.net:26893`;
+        const serverConnect = `connect ${server.ip}:${server.port}`;
 
         await supabase.from("matches").update({
             dathost_match_id: dh.id,
+            server_id: server.id,
             status: "DATHOST_BOOTING",
             dathost_status_snapshot: dh,
             server_connect: serverConnect,
@@ -430,6 +428,12 @@ async function triggerMatchStart(match) {
 
     } catch (e) {
         console.error(`   ❌ Start failed: ${e.message}`);
+
+        // Release the server lock if it failed
+        await supabase.from('game_servers')
+            .update({ status: 'FREE', current_match_id: null })
+            .eq('id', server.id);
+
         const attempts = (match.start_attempts || 0) + 1;
 
         // After 3 failed attempts, mark as START_FAILED (terminal)
@@ -586,6 +590,14 @@ async function runJanitor() {
         const recon = await reconcileSettlement({ ...match, ...locked });
         if (recon.done) {
             console.log(`   ✅ Reconciled: ${recon.reason}`);
+
+            // RELEASE SERVER (if reconciled as done)
+            if (match.dathost_match_id) {
+                await supabase.from('game_servers')
+                    .update({ status: 'FREE', current_match_id: null })
+                    .eq('current_match_id', match.id);
+                console.log(`   🔓 Server released (reconciled)`);
+            }
             continue;
         }
 
@@ -597,6 +609,18 @@ async function runJanitor() {
             } else {
                 await handleRefund({ ...match, ...locked });
                 console.log(`   ✅ REFUNDED`);
+            }
+
+            // RELEASE SERVER
+            if (match.dathost_match_id) {
+                const { error: releaseError } = await supabase
+                    .from('game_servers')
+                    .update({ status: 'FREE', current_match_id: null })
+                    .eq('current_match_id', match.id);
+
+                if (!releaseError) {
+                    console.log(`   🔓 Server released for next match`);
+                }
             }
         } catch (e) {
             console.error(`   ❌ Settlement error: ${e.message}`);

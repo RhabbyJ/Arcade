@@ -21,22 +21,36 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
-    console.log(`[DatHost Webhook] Event: ${event.type}, Match: ${event.match_group_id}`);
+    const dathostMatchId = event.id;
+    console.log(`[DatHost Webhook] Event: ${event.type}, DatHost ID: ${dathostMatchId}`);
 
-    const matchId = event.match_group_id;
-    if (!matchId) {
-        return NextResponse.json({ error: "Missing match_group_id" }, { status: 400 });
+    if (!dathostMatchId) {
+        return NextResponse.json({ error: "Missing event.id" }, { status: 400 });
     }
 
-    // 2. Log event for audit trail (always, regardless of outcome)
+    // 2. Find the match in OUR database using the DatHost ID
+    const { data: match, error: findError } = await supabaseAdmin
+        .from("matches")
+        .select("*")
+        .eq("dathost_match_id", dathostMatchId)
+        .maybeSingle();
+
+    if (!match) {
+        console.warn(`[Webhook] No match found for DatHost ID: ${dathostMatchId}`);
+        // Return 200 to stop DatHost from retrying forever on a match we don't know about
+        return NextResponse.json({ received: true, note: "Match not found in DB" });
+    }
+
+    const matchId = match.id;
+
+    // 3. Log event for audit trail
     try {
         await logMatchEvent(matchId, "dathost_webhook", event.type, event, event.id);
     } catch (logErr: any) {
         console.error("Failed to log event:", logErr.message);
-        // Continue anyway
     }
 
-    // 3. Non-terminal events: just snapshot
+    // 4. Non-terminal events: just snapshot
     if (!["match_ended", "match_cancelled"].includes(event.type)) {
         await supabaseAdmin.from("matches").update({
             dathost_status_snapshot: event,
@@ -45,10 +59,10 @@ export async function POST(req: Request) {
         return NextResponse.json({ received: true, type: event.type });
     }
 
-    // 4. Terminal events: atomic lock + settlement
+    // 5. Terminal events: atomic lock + settlement
     const lockId = crypto.randomUUID();
 
-    const { data: match, error: lockError } = await supabaseAdmin
+    const { data: lockedMatch, error: lockError } = await supabaseAdmin
         .from("matches")
         .update({
             payout_status: "PROCESSING",
@@ -68,31 +82,30 @@ export async function POST(req: Request) {
         return NextResponse.json({ received: true, note: "Lock error" });
     }
 
-    if (!match) {
+    if (!lockedMatch) {
         console.log(`Match ${matchId}: already handled or not found`);
         return NextResponse.json({ received: true, note: "Already handled or mismatch" });
     }
 
     try {
-        // 5. Reconcile chain first (in case already settled)
-        const recon = await reconcileSettlement(match);
+        // 6. Reconcile chain first
+        const recon = await reconcileSettlement(lockedMatch);
         if (recon.done) {
             console.log(`Match ${matchId}: Reconciled - ${recon.reason}`);
             return NextResponse.json({ received: true, note: `Reconciled: ${recon.reason}` });
         }
 
-        // 6. Execute settlement
+        // 7. Execute settlement
         if (event.type === "match_ended") {
-            // DatHost sends winner as "team1" or "team2"
             const winnerTeam = event.winner as "team1" | "team2";
             if (!winnerTeam) {
                 throw new Error("match_ended but no winner specified");
             }
-            await handlePayout(match, winnerTeam);
+            await handlePayout(lockedMatch, winnerTeam);
             console.log(`Match ${matchId}: PAID`);
         } else {
             // match_cancelled
-            await handleRefund(match);
+            await handleRefund(lockedMatch);
             console.log(`Match ${matchId}: REFUNDED`);
         }
     } catch (e: any) {
@@ -100,7 +113,7 @@ export async function POST(req: Request) {
         await supabaseAdmin.from("matches").update({
             payout_status: event.type === "match_cancelled" ? "REFUND_FAILED" : "FAILED",
             last_settlement_error: e.message ?? String(e),
-        }).eq("id", match.id);
+        }).eq("id", lockedMatch.id);
     }
 
     return NextResponse.json({ received: true });
