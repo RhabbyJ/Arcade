@@ -52,9 +52,17 @@ export async function POST(req: Request) {
 
     // 4. Non-terminal events: just snapshot
     if (!["match_ended", "match_cancelled"].includes(event.type)) {
-        await supabaseAdmin.from("matches").update({
+
+        const updates: any = {
             dathost_status_snapshot: event,
-        }).eq("id", matchId);
+        };
+
+        if (event.type === 'match_started') {
+            updates.status = 'LIVE';
+            updates.match_started_at = new Date().toISOString();
+        }
+
+        await supabaseAdmin.from("matches").update(updates).eq("id", matchId);
 
         return NextResponse.json({ received: true, type: event.type });
     }
