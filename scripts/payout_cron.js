@@ -376,7 +376,11 @@ async function processDeposits() {
 
         // Check if both verified -> START MATCH
         if (match.p1_deposit_verified && match.p2_deposit_verified) {
-            await triggerMatchStart(match);
+            try {
+                await triggerMatchStart(match);
+            } catch (err) {
+                console.error(`   ❌ Error starting match ${match.id}:`, err);
+            }
         }
     }
 }
@@ -413,7 +417,7 @@ async function triggerMatchStart(match) {
 
         const serverConnect = `connect ${server.ip}:${server.port}`;
 
-        await supabase.from("matches").update({
+        const { error: matchUpdateError } = await supabase.from("matches").update({
             dathost_match_id: dh.id,
             server_id: server.id,
             status: "DATHOST_BOOTING",
@@ -421,6 +425,11 @@ async function triggerMatchStart(match) {
             server_connect: serverConnect,
             start_attempts: (match.start_attempts || 0) + 1,
         }).eq("id", match.id);
+
+        if (matchUpdateError) {
+            console.error(`   ❌ CRITICAL: Failed to update match status to DATHOST_BOOTING:`, matchUpdateError);
+            throw new Error(`Match update failed: ${matchUpdateError.message}`);
+        }
 
         console.log(`   🚀 Match started! DatHost ID: ${dh.id}`);
         console.log(`   🎮 Connect: ${serverConnect}`);
