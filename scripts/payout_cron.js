@@ -122,7 +122,6 @@ async function startDatHostMatch(params) {
         settings: {
             map: "de_dust2",
             connect_time: 300,        // 5 mins to connect
-            warmup_time: 15,          // 15s warmup -> AUTO START. No .ready needed.
             match_begin_countdown: 5,
         },
         webhooks: {
