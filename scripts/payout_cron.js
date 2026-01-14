@@ -520,7 +520,7 @@ async function runJanitor() {
         const updatedAt = new Date(match.updated_at).getTime();
 
         if (match.status === "DATHOST_BOOTING" && createdAt > now - 5 * 60_000) continue;
-        if (match.status === "LIVE" && updatedAt > now - 20 * 60_000) continue;
+        if (match.status === "LIVE" && updatedAt > now - 1 * 60_000) continue;
 
         console.log(`\n[Janitor] Checking match ${match.id} (${match.status})`);
 
