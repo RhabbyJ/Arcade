@@ -491,7 +491,7 @@ async function acquireLock(matchId) {
         })
         .eq("id", matchId)
         .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
-        .or(`settlement_lock_id.is.null,updated_at.lt.${twoMinutesAgo}`)
+        .or(`settlement_lock_id.is.null,updated_at.lt."${twoMinutesAgo}"`)
         .select()
         .maybeSingle();
 
