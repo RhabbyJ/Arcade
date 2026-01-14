@@ -123,6 +123,12 @@ async function startDatHostMatch(params) {
             map: "de_dust2",
             connect_time: 300,        // 5 mins to connect
             match_begin_countdown: 5,
+            // QUICK MATCH: 1 Round for Testing
+            mp_maxrounds: 2, // 2 rounds to be safe (1 each side?) or just 1. CS2 minimums? 
+            mp_freezetime: 3,
+            mp_halftime: 0,
+            mp_overtime_enable: 0,
+            bot_quota: 0,
         },
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,

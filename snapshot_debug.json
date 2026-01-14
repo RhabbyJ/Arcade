@@ -1,0 +1,138 @@
+{
+  "id": "6966e300cfd6f8998810e6fd",
+  "team1": {
+    "flag": null,
+    "name": null,
+    "stats": {
+      "score": 0
+    }
+  },
+  "team2": {
+    "flag": null,
+    "name": null,
+    "stats": {
+      "score": 0
+    }
+  },
+  "events": [
+    {
+      "event": "booting_server",
+      "timestamp": 1768350473
+    },
+    {
+      "event": "loading_map",
+      "timestamp": 1768350476
+    },
+    {
+      "event": "server_ready_for_players",
+      "timestamp": 1768350479
+    },
+    {
+      "event": "player_connected",
+      "payload": {
+        "steam_id_64": "76561198280663915"
+      },
+      "timestamp": 1768350487
+    },
+    {
+      "event": "match_canceled",
+      "timestamp": 1768350780
+    }
+  ],
+  "players": [
+    {
+      "team": "team1",
+      "stats": {
+        "2ks": 0,
+        "3ks": 0,
+        "4ks": 0,
+        "5ks": 0,
+        "mvps": 0,
+        "kills": 0,
+        "score": 0,
+        "deaths": 0,
+        "assists": 0,
+        "1vX_wins": 0,
+        "1vX_attempts": 0,
+        "damage_dealt": 0,
+        "entry_attempts": 0,
+        "flashes_thrown": 0,
+        "utility_damage": 0,
+        "utility_thrown": 0,
+        "entry_successes": 0,
+        "kills_with_pistol": 0,
+        "kills_with_sniper": 0,
+        "flashes_successful": 0,
+        "kills_with_headshot": 0,
+        "flashes_enemies_blinded": 0
+      },
+      "kicked": false,
+      "match_id": "6966e300cfd6f8998810e6fd",
+      "connected": true,
+      "steam_id_64": "76561198280663915",
+      "disconnected_at": null,
+      "nickname_override": "Player 1",
+      "disconnected_reason": null
+    },
+    {
+      "team": "team2",
+      "stats": {
+        "2ks": 0,
+        "3ks": 0,
+        "4ks": 0,
+        "5ks": 0,
+        "mvps": 0,
+        "kills": 0,
+        "score": 0,
+        "deaths": 0,
+        "assists": 0,
+        "1vX_wins": 0,
+        "1vX_attempts": 0,
+        "damage_dealt": 0,
+        "entry_attempts": 0,
+        "flashes_thrown": 0,
+        "utility_damage": 0,
+        "utility_thrown": 0,
+        "entry_successes": 0,
+        "kills_with_pistol": 0,
+        "kills_with_sniper": 0,
+        "flashes_successful": 0,
+        "kills_with_headshot": 0,
+        "flashes_enemies_blinded": 0
+      },
+      "kicked": false,
+      "match_id": "6966e300cfd6f8998810e6fd",
+      "connected": false,
+      "steam_id_64": "76561198280669165",
+      "disconnected_at": null,
+      "nickname_override": "Player 2",
+      "disconnected_reason": null
+    }
+  ],
+  "finished": true,
+  "settings": {
+    "map": "de_dust2",
+    "password": null,
+    "team_size": null,
+    "connect_time": 300,
+    "enable_plugin": false,
+    "wait_for_gotv": false,
+    "enable_tech_pause": false,
+    "match_begin_countdown": 5
+  },
+  "webhooks": {
+    "event_url": "https://arcade-sable.vercel.app/api/webhook/dathost",
+    "match_end_url": null,
+    "round_end_url": null,
+    "enabled_events": [
+      "match_started",
+      "match_ended",
+      "match_canceled"
+    ],
+    "authorization_header": "Bearer ArcadeWebhook2026SecretKey",
+    "player_votekick_success_url": null
+  },
+  "cancel_reason": "MISSING_PLAYERS:76561198280669165",
+  "rounds_played": 0,
+  "game_server_id": "692b5cc203632a85c6fdba2c"
+}
