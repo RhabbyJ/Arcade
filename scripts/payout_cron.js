@@ -482,7 +482,7 @@ async function acquireLock(matchId) {
     // 1. payout_status is not finalized (PAID, REFUNDED, etc)
     // 2. OR settlement_lock_id is null (never locked)
     // 3. OR updated_at is older than 2 minutes (stale lock)
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from("matches")
         .update({
             payout_status: "PROCESSING",
