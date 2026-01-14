@@ -123,12 +123,6 @@ async function startDatHostMatch(params) {
             map: "de_dust2",
             connect_time: 300,        // 5 mins to connect
             match_begin_countdown: 5,
-            // QUICK MATCH: 1 Round for Testing
-            mp_maxrounds: 2, // 2 rounds to be safe (1 each side?) or just 1. CS2 minimums? 
-            mp_freezetime: 3,
-            mp_halftime: 0,
-            mp_overtime_enable: 0,
-            bot_quota: 0,
         },
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
@@ -478,10 +472,29 @@ async function acquireLock(matchId) {
     const now = new Date();
     const twoMinutesAgo = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
 
-    // Try to acquire lock - allow if:
-    // 1. payout_status is not finalized (PAID, REFUNDED, etc)
-    // 2. OR settlement_lock_id is null (never locked)
-    // 3. OR updated_at is older than 2 minutes (stale lock)
+    // Step 1: Check if we can acquire the lock
+    const { data: check } = await supabase
+        .from("matches")
+        .select("id, payout_status, settlement_lock_id, updated_at")
+        .eq("id", matchId)
+        .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
+        .maybeSingle();
+
+    if (!check) {
+        console.log(`   ⏭️ Match already finalized or not found`);
+        return null;
+    }
+
+    // Check lock conditions: either no lock, or stale lock (>2 min old)
+    const hasLock = check.settlement_lock_id !== null;
+    const isStale = new Date(check.updated_at) < new Date(twoMinutesAgo);
+
+    if (hasLock && !isStale) {
+        console.log(`   ⏭️ Lock held by another process (updated ${check.updated_at})`);
+        return null;
+    }
+
+    // Step 2: Try to acquire lock (optimistic locking)
     const { data, error } = await supabase
         .from("matches")
         .update({
@@ -490,16 +503,21 @@ async function acquireLock(matchId) {
             updated_at: now.toISOString(),
         })
         .eq("id", matchId)
-        .not("payout_status", "in", `(${FINALIZED.map(s => `"${s}"`).join(",")})`)
-        .or(`settlement_lock_id.is.null,updated_at.lt."${twoMinutesAgo}"`)
+        .eq("settlement_lock_id", check.settlement_lock_id) // Must match what we checked
         .select()
         .maybeSingle();
 
     if (error) {
-        console.error(`   ❌ acquireLock Error: ${error.code} - ${error.message} - ${error.details}`);
+        console.error(`   ❌ acquireLock Error: ${error.code} - ${error.message}`);
+        return null;
     }
 
-    return data ?? null;
+    if (!data) {
+        console.log(`   ⏭️ Lock acquired by another process (race condition)`);
+        return null;
+    }
+
+    return data;
 }
 
 async function runJanitor() {
