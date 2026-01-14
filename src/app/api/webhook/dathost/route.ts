@@ -59,8 +59,16 @@ export async function POST(req: Request) {
         };
 
         if (event.type === 'match_started') {
-            updates.status = 'LIVE';
-            updates.match_started_at = new Date().toISOString();
+            // "Smart Start": Only go LIVE if we actually have 2 players connected (1v1)
+            // This prevents false LIVE on warmup end when opponent is missing
+            const distinctPlayers = new Set((event.players || []).map((p: any) => p.steam_id_64)).size;
+
+            if (distinctPlayers >= 2) {
+                updates.status = 'LIVE';
+                updates.match_started_at = new Date().toISOString();
+            } else {
+                console.log(`[Webhook] Match started but only ${distinctPlayers} players. Ignoring LIVE status.`);
+            }
         }
 
         await supabaseAdmin.from("matches").update(updates).eq("id", matchId);
