@@ -29,7 +29,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const MATCH_ID = 'a51b6720-027f-461b-a055-9eb4e5bc553e';
+const MATCH_ID = 'dc9f316c-6f58-40c9-a5e0-44ac141aa959';
 
 async function main() {
     console.log(`Attempting to unlock match: ${MATCH_ID}`);
