@@ -24,14 +24,21 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function main() {
-    console.log("Checking matches table columns...");
-    // Since we can't query information_schema easily via JS client due to permissions usually,
-    // we generally rely on Rpc or just errors.
-    // But let's try to just insert a dummy row or select empty to see data.
+    console.log("Checking for 'updated_at' column in 'matches' table...");
+    try {
+        const { data, error } = await supabase
+            .from('matches')
+            .select('updated_at')
+            .limit(1);
 
-    // Instead, I'll modify payout_cron to log the specific error.
-    // That's the most direct way.
-    console.log("Skipping schema check in favor of patching code for logs.");
+        if (error) {
+            console.error("❌ 'updated_at' check FAILED:", error.message);
+        } else {
+            console.log("✅ 'updated_at' column exists.");
+        }
+    } catch (e) {
+        console.error("Exception:", e);
+    }
 }
 
 main();

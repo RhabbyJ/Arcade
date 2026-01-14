@@ -31,9 +31,9 @@ async function main() {
         console.log("✅ exec_sql works! Data:", data);
 
         // If it works, ADD THE COLUMN
-        console.log("Adding match column...");
+        console.log("Adding updated_at column...");
         const { error: ddlError } = await supabase.rpc('exec_sql', {
-            query: 'ALTER TABLE matches ADD COLUMN IF NOT EXISTS server_connect TEXT;'
+            query: 'ALTER TABLE matches ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();'
         });
         if (ddlError) console.error("DDL failed:", ddlError);
         else console.log("✅ Column added successfully!");
