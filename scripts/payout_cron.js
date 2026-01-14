@@ -181,14 +181,6 @@ async function startDatHostMatch(params) {
             connect_time: 300,        // 5 mins to connect
             match_begin_countdown: 5,
         },
-        // Force commands to run on match start to override gamemode defaults
-        commands: [
-            "bot_quota 0",
-            "bot_kick",
-            "mp_warmuptime 60",
-            "mp_warmuptime_all_players_connected 60",
-            "mp_warmup_start"
-        ],
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
             authorization_header: `Bearer ${process.env.DATHOST_WEBHOOK_SECRET}`,
@@ -484,6 +476,11 @@ async function triggerMatchStart(match) {
             p1Steam64: match.player1_steam,
             p2Steam64: match.player2_steam
         });
+
+        // FORCE CONFIG: Exec the config we uploaded + explicit commands
+        // This runs immediately after match start logic begins
+        await sendDatHostConsole(server.dathost_id, "exec live_server.cfg");
+        await sendDatHostConsole(server.dathost_id, "mp_warmuptime 60; bot_kick; bot_quota 0; mp_warmup_start");
 
         const serverConnect = `connect ${server.ip}:${server.port}`;
 
