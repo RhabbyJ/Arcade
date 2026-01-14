@@ -495,6 +495,10 @@ async function acquireLock(matchId) {
         .select()
         .maybeSingle();
 
+    if (error) {
+        console.error(`   ❌ acquireLock Error: ${error.code} - ${error.message} - ${error.details}`);
+    }
+
     return data ?? null;
 }
 
