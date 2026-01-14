@@ -109,6 +109,43 @@ async function getDatHostMatch(dathostMatchId) {
     return await res.json();
 }
 
+async function uploadDatHostConfig(gameServerId) {
+    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+
+    // Quick Match Config
+    const configContent = `
+mp_maxrounds 2
+mp_freezetime 3
+mp_halftime 0
+mp_overtime_enable 0
+bot_quota 0
+say "Arcade Quick Match Config Loaded"
+    `.trim();
+
+    // DatHost looks for cfg/live_server.cfg for live match settings
+    const filePath = "cfg/live_server.cfg";
+    const url = `https://dathost.net/api/0.1/game-servers/${gameServerId}/files/${encodeURIComponent(filePath)}`;
+
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                Authorization: `Basic ${auth}`,
+                "Content-Type": "application/x-www-form-urlencoded" // DatHost file API often treats body as content
+            },
+            body: configContent
+        });
+
+        if (!res.ok) {
+            console.warn(`[DatHost] Config upload warning: ${res.status} - ${await res.text()}`);
+        } else {
+            console.log(`[DatHost] Custom config uploaded (Quick Match settings applied).`);
+        }
+    } catch (e) {
+        console.error(`[DatHost] Failed to upload config:`, e.message);
+    }
+}
+
 async function startDatHostMatch(params) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
@@ -408,6 +445,9 @@ async function triggerMatchStart(match) {
 
     // 2. Start DatHost with dynamic server
     try {
+        // Upload Quick Match settings first
+        await uploadDatHostConfig(server.dathost_id);
+
         const dh = await startDatHostMatch({
             gameServerId: server.dathost_id,
             matchId: match.id,
