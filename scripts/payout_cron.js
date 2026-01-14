@@ -178,7 +178,7 @@ async function startDatHostMatch(params) {
         ],
         settings: {
             map: "de_dust2",
-            connect_time: 300,        // 5 mins to connect
+            connect_time: 60,        // 1 min to connect (User requested faster test)
             match_begin_countdown: 5,
         },
         webhooks: {
