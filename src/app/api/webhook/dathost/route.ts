@@ -51,7 +51,8 @@ export async function POST(req: Request) {
     }
 
     // 4. Non-terminal events: just snapshot
-    if (!["match_ended", "match_cancelled"].includes(event.type)) {
+    // Handle both spellings: DatHost uses "match_canceled" (US) but docs may say "match_cancelled" (UK)
+    if (!["match_ended", "match_cancelled", "match_canceled"].includes(event.type)) {
 
         const updates: any = {
             dathost_status_snapshot: event,
