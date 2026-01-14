@@ -460,7 +460,7 @@ async function triggerMatchStart(match) {
         const { error: matchUpdateError } = await supabase.from("matches").update({
             dathost_match_id: dh.id,
             server_id: server.id,
-            status: "DATHOST_BOOTING",
+            status: "WAITING_FOR_PLAYERS",
             dathost_status_snapshot: dh,
             server_connect: serverConnect,
             start_attempts: (match.start_attempts || 0) + 1,
