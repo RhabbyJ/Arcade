@@ -163,6 +163,14 @@ async function startDatHostMatch(params) {
             connect_time: 300,        // 5 mins to connect
             match_begin_countdown: 5,
         },
+        // Force commands to run on match start to override gamemode defaults
+        commands: [
+            "bot_quota 0",
+            "bot_kick",
+            "mp_warmuptime 60",
+            "mp_warmuptime_all_players_connected 60",
+            "mp_warmup_start"
+        ],
         webhooks: {
             event_url: `${APP_URL}/api/webhook/dathost`,
             authorization_header: `Bearer ${process.env.DATHOST_WEBHOOK_SECRET}`,
