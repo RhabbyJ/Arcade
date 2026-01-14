@@ -148,6 +148,24 @@ say "Arcade Quick Match Config Loaded"
     }
 }
 
+async function sendDatHostConsole(gameServerId, line) {
+    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+    const url = `https://dathost.net/api/0.1/game-servers/${gameServerId}/console`;
+    try {
+        await fetch(url, {
+            method: "POST",
+            headers: {
+                Authorization: `Basic ${auth}`,
+                "Content-Type": "application/x-www-form-urlencoded"
+            },
+            body: `line=${encodeURIComponent(line)}`
+        });
+    } catch (e) {
+        console.error(`[DatHost] Console cmd failed: ${e.message}`);
+    }
+}
+
+
 async function startDatHostMatch(params) {
     const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
 
@@ -289,6 +307,7 @@ async function handlePayout(match, winnerTeam) {
 async function handleRefund(match) {
     await supabase.from("matches").update({ settlement_kind: "REFUND" }).eq("id", match.id);
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    console.log(`   Detailed Refund ID: ${matchIdBytes32} (Original: ${match.contract_match_id})`);
 
     if (match.player1_address) {
         try {
@@ -297,6 +316,7 @@ async function handleRefund(match) {
             console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
             await tx1.wait();
         } catch (e) {
+            console.error(`   ❌ Refund P1 Failed: ${e.message}`);
             if (!e.message?.includes("Nothing to refund")) throw e;
         }
     }
@@ -677,18 +697,23 @@ async function runJanitor() {
             }
         } else {
             // Match not finished - check if players are connected
-            const anyConnected = dh.players?.some(p => p.connected === true);
+            const connectedCount = (dh.players || []).filter(p => p.connected === true).length;
+            const anyConnected = connectedCount > 0;
 
-            if (anyConnected && match.status !== "LIVE") {
-                // At least one player connected - update to LIVE
-                console.log(`   ℹ️ Players connected, updating to LIVE`);
+            if (connectedCount >= 2 && match.status !== "LIVE") {
+                // Both players connected - update to LIVE
+                console.log(`   ℹ️ ${connectedCount} Players connected, updating to LIVE`);
                 await supabase.from("matches").update({
                     status: "LIVE",
                 }).eq("id", match.id);
             } else if (!anyConnected) {
+                // Enforce warmup settings while waiting (override server defaults)
+                if (dh.game_server_id) {
+                    await sendDatHostConsole(dh.game_server_id, "mp_warmuptime 60; bot_kick; bot_quota 0");
+                }
                 console.log(`   ℹ️ Waiting for players to connect (finished=${dh.finished}), skipping`);
             } else {
-                console.log(`   ℹ️ Match in progress, skipping`);
+                console.log(`   ℹ️ Match in progress (${connectedCount} connected), skipping`);
             }
             continue;
         }
