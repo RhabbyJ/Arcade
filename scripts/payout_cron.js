@@ -95,7 +95,7 @@ const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PAYOUT_PRIVATE_KEY, provider);
 const escrow = new ethers.Contract(ESCROW_ADDRESS, ESCROW_ABI, wallet);
 
-const FINALIZED = ["PAID", "REFUNDED", "ACCEPTED"];
+const FINALIZED = ["PAID", "REFUNDED"];
 
 // --- DatHost API ---
 
