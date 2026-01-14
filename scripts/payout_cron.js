@@ -585,6 +585,34 @@ async function runJanitor() {
         if (match.status === "WAITING_FOR_PLAYERS" && updatedAt > now - 1 * 60_000) continue;
         if (match.status === "LIVE" && updatedAt > now - 1 * 60_000) continue;
 
+        // TIMEOUT CHECK: If waiting for players > 15 mins, Cancel & Refund
+        if (match.status === "WAITING_FOR_PLAYERS" && updatedAt < now - 15 * 60_000) {
+            console.log(`[Janitor] ⏰ Match ${match.id} timed out waiting for players. Cancelling...`);
+            const locked = await acquireLock(match.id);
+            if (locked) {
+                try {
+                    const auth = Buffer.from(`${DATHOST_USER}:${DATHOST_PASS}`).toString('base64');
+                    await fetch(`https://dathost.net/api/0.1/cs2-matches/${match.dathost_match_id}/stop`, {
+                        method: "POST",
+                        headers: { Authorization: `Basic ${auth}` }
+                    });
+                    console.log(`   🛑 DatHost match stopped.`);
+                } catch (e) {
+                    console.error(`   ⚠️ Failed to stop DatHost match: ${e.message}`);
+                }
+
+                await handleRefund(locked);
+                console.log(`   💸 Refunded due to timeout.`);
+
+                // Release Server
+                await supabase.from('game_servers')
+                    .update({ status: 'FREE', current_match_id: null })
+                    .eq('current_match_id', match.id);
+                console.log(`   🔓 Server released.`);
+            }
+            continue; // Done with this match
+        }
+
         console.log(`\n[Janitor] Checking match ${match.id} (${match.status})`);
 
         // Get DatHost truth

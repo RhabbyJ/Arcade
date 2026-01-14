@@ -8,6 +8,8 @@ mp_freezetime 3
 mp_halftime 0
 mp_overtime_enable 0
 bot_quota 0
+bot_kick
+mp_warmuptime_all_players_connected 1
 Say "Arcade Quick Match Config Loaded"
     `.trim();
 
