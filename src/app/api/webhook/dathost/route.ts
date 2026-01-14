@@ -59,15 +59,20 @@ export async function POST(req: Request) {
         };
 
         if (event.type === 'match_started') {
-            // "Smart Start": Only go LIVE if we actually have 2 players connected (1v1)
-            // This prevents false LIVE on warmup end when opponent is missing
-            const distinctPlayers = new Set((event.players || []).map((p: any) => p.steam_id_64)).size;
+            // "Smart Start": Only go LIVE if we actually have 2 connected players (1v1)
+            // This prevents false LIVE on warmup end when opponent is missing (disconnected)
+            // Note: DatHost players list includes connected: false for players who joined but left
+            const distinctPlayers = new Set(
+                (event.players || [])
+                    .filter((p: any) => p.connected === true)
+                    .map((p: any) => p.steam_id_64)
+            ).size;
 
             if (distinctPlayers >= 2) {
                 updates.status = 'LIVE';
                 updates.match_started_at = new Date().toISOString();
             } else {
-                console.log(`[Webhook] Match started but only ${distinctPlayers} players. Ignoring LIVE status.`);
+                console.log(`[Webhook] Match started but only ${distinctPlayers} connected players. Ignoring LIVE status.`);
             }
         }
 

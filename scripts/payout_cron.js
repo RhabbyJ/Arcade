@@ -535,17 +535,22 @@ async function acquireLock(matchId) {
     }
 
     // Step 2: Try to acquire lock (optimistic locking)
-    const { data, error } = await supabase
+    let q = supabase
         .from("matches")
         .update({
             payout_status: "PROCESSING",
             settlement_lock_id: lockId,
             updated_at: now.toISOString(),
         })
-        .eq("id", matchId)
-        .eq("settlement_lock_id", check.settlement_lock_id) // Must match what we checked
-        .select()
-        .maybeSingle();
+        .eq("id", matchId);
+
+    if (check.settlement_lock_id === null) {
+        q = q.is("settlement_lock_id", null);
+    } else {
+        q = q.eq("settlement_lock_id", check.settlement_lock_id);
+    }
+
+    const { data, error } = await q.select().maybeSingle();
 
     if (error) {
         console.error(`   ❌ acquireLock Error: ${error.code} - ${error.message}`);
