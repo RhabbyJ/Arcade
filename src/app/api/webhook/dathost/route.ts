@@ -22,6 +22,19 @@ export async function POST(req: Request) {
     }
 
     const dathostMatchId = event.id;
+    console.log(`[DatHost Webhook] Raw Payload:`, JSON.stringify(event));
+
+    // Infer event type if missing (Fix for "Event: undefined")
+    if (!event.type) {
+        if (event.cancel_reason) {
+            event.type = "match_cancelled";
+            console.log("[Webhook] Inferred type: match_cancelled");
+        } else if (event.finished === true) {
+            event.type = "match_ended";
+            console.log("[Webhook] Inferred type: match_ended");
+        }
+    }
+
     console.log(`[DatHost Webhook] Event: ${event.type}, DatHost ID: ${dathostMatchId}`);
 
     if (!dathostMatchId) {
