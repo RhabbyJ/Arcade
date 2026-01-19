@@ -788,11 +788,18 @@ async function runJanitor() {
             }
         } catch (e) {
             console.error(`   ❌ Settlement error: ${e.message}`);
-            await supabase.from("matches").update({
+            // Truncate error to avoid DB issues
+            const safeError = (e.message || "Unknown error").substring(0, 1000);
+
+            const { error: updateError } = await supabase.from("matches").update({
                 payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED",
-                last_settlement_error: e.message,
-                settlement_lock_id: null, // Release lock immediately so we don't wait 2 mins
+                last_settlement_error: safeError,
+                settlement_lock_id: null, // Release lock immediately
             }).eq("id", match.id);
+
+            if (updateError) {
+                console.error(`   ❌ Failed to release lock/update status: ${updateError.message}`);
+            }
         }
     }
 }
