@@ -3,8 +3,15 @@ import { supabaseAdmin } from "./supabaseAdmin";
 import { ESCROW_ABI, numericToBytes32 } from "./abi";
 
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
-const wallet = new ethers.Wallet(process.env.PAYOUT_PRIVATE_KEY!, provider);
-const escrow = new ethers.Contract(process.env.ESCROW_ADDRESS!, ESCROW_ABI, wallet);
+
+// Lazy-load to prevent crashes on Vercel where keys might be missing
+function getEscrow() {
+    if (!process.env.PAYOUT_PRIVATE_KEY) {
+        throw new Error("Missing PAYOUT_PRIVATE_KEY");
+    }
+    const wallet = new ethers.Wallet(process.env.PAYOUT_PRIVATE_KEY, provider);
+    return new ethers.Contract(process.env.ESCROW_ADDRESS!, ESCROW_ABI, wallet);
+}
 
 export interface MatchRecord {
     id: string;
@@ -33,7 +40,7 @@ export async function handlePayout(match: MatchRecord, winnerTeam: "team1" | "te
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
 
     // Send transaction
-    const tx = await escrow.distributeWinnings(matchIdBytes32, winnerAddress);
+    const tx = await getEscrow().distributeWinnings(matchIdBytes32, winnerAddress);
 
     // Crash-safe: store tx hash immediately
     await supabaseAdmin.from("matches").update({
@@ -75,7 +82,7 @@ export async function handleRefund(match: MatchRecord): Promise<{ txHash1: strin
     // Refund Player 1
     if (match.player1_address) {
         try {
-            const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
+            const tx1 = await getEscrow().refundMatch(matchIdBytes32, match.player1_address);
             txHash1 = tx1.hash;
             await supabaseAdmin.from("matches").update({ refund_tx_hash_1: txHash1 }).eq("id", match.id);
             await tx1.wait();
@@ -90,7 +97,7 @@ export async function handleRefund(match: MatchRecord): Promise<{ txHash1: strin
     // Refund Player 2
     if (match.player2_address) {
         try {
-            const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
+            const tx2 = await getEscrow().refundMatch(matchIdBytes32, match.player2_address);
             txHash2 = tx2.hash;
             await supabaseAdmin.from("matches").update({ refund_tx_hash_2: txHash2 }).eq("id", match.id);
             await tx2.wait();

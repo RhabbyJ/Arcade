@@ -616,18 +616,22 @@ async function acquireLock(matchId) {
 async function runJanitor() {
     const now = Date.now();
 
-    // Find stuck matches
+    // Find stuck matches (Active + Queued Settlements)
     const { data: stuckMatches } = await supabase
         .from("matches")
         .select("*")
-        .in("status", ["DATHOST_BOOTING", "WAITING_FOR_PLAYERS", "LIVE"])
+        .in("status", ["DATHOST_BOOTING", "WAITING_FOR_PLAYERS", "LIVE", "CANCELLED", "COMPLETE"])
         .lt("settlement_attempts", 10);
 
     if (!stuckMatches || stuckMatches.length === 0) return;
 
-    console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck matches`);
+    console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck/queued matches`);
 
     for (const match of stuckMatches) {
+        // Skip already finalized
+        if (match.payout_status === "PAID" || match.payout_status === "REFUNDED") {
+            continue;
+        }
         if (!match.dathost_match_id) continue;
 
         // Skip if too recent

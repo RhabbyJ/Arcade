@@ -117,7 +117,27 @@ export async function POST(req: Request) {
             return NextResponse.json({ received: true, note: `Reconciled: ${recon.reason}` });
         }
 
-        // 7. Execute settlement
+        // 7. Execute settlement (IF we have the keys, otherwise queue for Janitor)
+        if (!process.env.PAYOUT_PRIVATE_KEY) {
+            console.log(`Match ${matchId}: No private key (Vercel). Updating status and queuing for Janitor.`);
+
+            if (event.type === "match_ended") {
+                await supabaseAdmin.from("matches").update({
+                    status: "COMPLETE",
+                    payout_status: "PROCESSING", // Janitor will pick this up
+                    dathost_status_snapshot: event,
+                }).eq("id", lockedMatch.id);
+            } else {
+                await supabaseAdmin.from("matches").update({
+                    status: "CANCELLED",
+                    payout_status: "PROCESSING", // Janitor will pick this up
+                    dathost_status_snapshot: event,
+                }).eq("id", lockedMatch.id);
+            }
+            return NextResponse.json({ received: true, note: "Queued for Janitor" });
+        }
+
+        // We have keys (VPS) -> Execute immediately
         if (event.type === "match_ended") {
             const winnerTeam = event.winner as "team1" | "team2";
             if (!winnerTeam) {
