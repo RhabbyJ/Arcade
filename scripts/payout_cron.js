@@ -732,7 +732,8 @@ async function runJanitor() {
                 }
                 // console.log(`   ℹ️ Waiting for players to connect (finished=${dh.finished}), skipping`);
             } else {
-                // console.log(`   ℹ️ Match in progress (${connectedCount} connected), skipping`);
+                const names = (dh.players || []).filter(p => p.connected).map(p => p.name).join(", ");
+                console.log(`   ℹ️ Match in progress (${connectedCount} connected): ${names}`);
             }
             continue;
         }
@@ -792,7 +793,7 @@ async function runJanitor() {
             const safeError = (e.message || "Unknown error").substring(0, 1000);
 
             const { error: updateError } = await supabase.from("matches").update({
-                payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED",
+                // payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED", // REMOVED to avoid enum error
                 last_settlement_error: safeError,
                 settlement_lock_id: null, // Release lock immediately
             }).eq("id", match.id);
