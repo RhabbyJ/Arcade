@@ -627,7 +627,7 @@ async function runJanitor() {
 
     if (!stuckMatches || stuckMatches.length === 0) return;
 
-    // console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck/queued matches`);
+    console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck/queued matches`);
 
     for (const match of stuckMatches) {
         if (!match.dathost_match_id) continue;

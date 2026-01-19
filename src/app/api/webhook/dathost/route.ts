@@ -166,7 +166,7 @@ export async function POST(req: Request) {
     } catch (e: any) {
         console.error(`Settlement error for ${matchId}:`, e.message);
         await supabaseAdmin.from("matches").update({
-            payout_status: event.type === "match_cancelled" ? "REFUND_FAILED" : "FAILED",
+            // payout_status: event.type === "match_cancelled" ? "REFUND_FAILED" : "FAILED", // REMOVED to avoid enum error
             last_settlement_error: e.message ?? String(e),
         }).eq("id", lockedMatch.id);
     }
