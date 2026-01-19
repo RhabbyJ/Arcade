@@ -791,6 +791,7 @@ async function runJanitor() {
             await supabase.from("matches").update({
                 payout_status: target === "REFUND" ? "REFUND_FAILED" : "FAILED",
                 last_settlement_error: e.message,
+                settlement_lock_id: null, // Release lock immediately so we don't wait 2 mins
             }).eq("id", match.id);
         }
     }
