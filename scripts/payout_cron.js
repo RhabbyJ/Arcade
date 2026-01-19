@@ -809,7 +809,7 @@ async function main() {
         } catch (e) {
             console.error("Bot loop error:", e.message);
         }
-        await new Promise(r => setTimeout(r, 30_000)); // Run every 30s
+        await new Promise(r => setTimeout(r, 5_000)); // Run every 5s (Near-instant backup)
     }
 }
 
