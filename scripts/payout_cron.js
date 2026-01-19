@@ -686,9 +686,9 @@ async function runJanitor() {
         let target = null;
         let winnerTeam = null;
 
-        // Log full response for debugging
-        console.log(`   📡 DatHost Keys: ${Object.keys(dh).join(', ')}`);
-        console.log(`   📡 finished=${dh.finished}, cancel_reason=${dh.cancel_reason}, rounds_played=${dh.rounds_played}`);
+        // Log full response for debugging (Commented out to reduce noise)
+        // console.log(`   📡 DatHost Keys: ${Object.keys(dh).join(', ')}`);
+        // console.log(`   📡 finished=${dh.finished}, cancel_reason=${dh.cancel_reason}, rounds_played=${dh.rounds_played}`);
 
         if (dh.notFound) {
             console.log(`   ℹ️ Match not found in DatHost -> refund`);
@@ -727,13 +727,12 @@ async function runJanitor() {
                     status: "LIVE",
                 }).eq("id", match.id);
             } else if (!anyConnected) {
-                // Enforce warmup settings while waiting (override server defaults)
                 if (dh.game_server_id) {
                     await sendDatHostConsole(dh.game_server_id, "mp_warmuptime 60; bot_kick; bot_quota 0");
                 }
-                console.log(`   ℹ️ Waiting for players to connect (finished=${dh.finished}), skipping`);
+                // console.log(`   ℹ️ Waiting for players to connect (finished=${dh.finished}), skipping`);
             } else {
-                console.log(`   ℹ️ Match in progress (${connectedCount} connected), skipping`);
+                // console.log(`   ℹ️ Match in progress (${connectedCount} connected), skipping`);
             }
             continue;
         }
