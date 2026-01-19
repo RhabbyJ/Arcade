@@ -4,7 +4,7 @@ import { handlePayout, handleRefund, logMatchEvent } from "@/lib/settlement";
 import { reconcileSettlement } from "@/lib/settlement_reconciler";
 
 // Payout statuses that are terminal (don't process again)
-const FINALIZED = ["PROCESSING", "PAID", "REFUND_PROCESSING", "REFUNDED"];
+const FINALIZED = ["PROCESSING", "PAID", "REFUNDED"];
 
 export async function POST(req: Request) {
     // 1. Verify webhook auth
