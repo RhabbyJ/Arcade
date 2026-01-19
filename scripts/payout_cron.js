@@ -301,26 +301,46 @@ async function handleRefund(match) {
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
     console.log(`   Detailed Refund ID: ${matchIdBytes32} (Original: ${match.contract_match_id})`);
 
-    if (match.player1_address) {
+    // Helper to check if already succeeded on-chain
+    const checkSuccess = async (hash) => {
+        if (!hash) return false;
         try {
-            const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
-            await supabase.from("matches").update({ refund_tx_hash_1: tx1.hash }).eq("id", match.id);
-            console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
-            await tx1.wait();
+            const receipt = await provider.getTransactionReceipt(hash);
+            return receipt && receipt.status === 1;
         } catch (e) {
-            console.error(`   ❌ Refund P1 Failed: ${e.message}`);
-            if (!e.message?.includes("Nothing to refund")) throw e;
+            return false;
+        }
+    };
+
+    if (match.player1_address) {
+        if (await checkSuccess(match.refund_tx_hash_1)) {
+            console.log(`   ✅ P1 already refunded (verified on-chain)`);
+        } else {
+            try {
+                const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
+                await supabase.from("matches").update({ refund_tx_hash_1: tx1.hash }).eq("id", match.id);
+                console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
+                await tx1.wait();
+            } catch (e) {
+                console.error(`   ❌ Refund P1 Failed: ${e.message}`);
+                if (!e.message?.includes("Nothing to refund")) throw e;
+            }
         }
     }
 
     if (match.player2_address) {
-        try {
-            const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
-            await supabase.from("matches").update({ refund_tx_hash_2: tx2.hash }).eq("id", match.id);
-            console.log(`   📝 Refund P2 TX: ${tx2.hash}`);
-            await tx2.wait();
-        } catch (e) {
-            if (!e.message?.includes("Nothing to refund")) throw e;
+        if (await checkSuccess(match.refund_tx_hash_2)) {
+            console.log(`   ✅ P2 already refunded (verified on-chain)`);
+        } else {
+            try {
+                const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
+                await supabase.from("matches").update({ refund_tx_hash_2: tx2.hash }).eq("id", match.id);
+                console.log(`   📝 Refund P2 TX: ${tx2.hash}`);
+                await tx2.wait();
+            } catch (e) {
+                console.error(`   ❌ Refund P2 Failed: ${e.message}`);
+                if (!e.message?.includes("Nothing to refund")) throw e;
+            }
         }
     }
 
