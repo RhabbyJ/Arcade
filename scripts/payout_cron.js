@@ -617,10 +617,12 @@ async function runJanitor() {
     const now = Date.now();
 
     // Find stuck matches (Active + Queued Settlements)
+    // Find stuck matches (Active + Queued Settlements)
     const { data: stuckMatches } = await supabase
         .from("matches")
         .select("*")
         .in("status", ["DATHOST_BOOTING", "WAITING_FOR_PLAYERS", "LIVE", "CANCELLED", "COMPLETE"])
+        .not("payout_status", "in", '("PAID","REFUNDED")')
         .lt("settlement_attempts", 10);
 
     if (!stuckMatches || stuckMatches.length === 0) return;
@@ -628,10 +630,6 @@ async function runJanitor() {
     console.log(`[Janitor] Found ${stuckMatches.length} potentially stuck/queued matches`);
 
     for (const match of stuckMatches) {
-        // Skip already finalized
-        if (match.payout_status === "PAID" || match.payout_status === "REFUNDED") {
-            continue;
-        }
         if (!match.dathost_match_id) continue;
 
         // Skip if too recent
