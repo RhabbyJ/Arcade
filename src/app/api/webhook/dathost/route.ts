@@ -100,6 +100,7 @@ export async function POST(req: Request) {
     const { data: lockedMatch, error: lockError } = await supabaseAdmin
         .from("matches")
         .update({
+            status: event.type === "match_ended" ? "COMPLETE" : "CANCELLED", // Instant UI update
             payout_status: "PROCESSING",
             payout_event_id: event.id ?? null,
             settlement_lock_id: lockId,
@@ -168,6 +169,7 @@ export async function POST(req: Request) {
         await supabaseAdmin.from("matches").update({
             // payout_status: event.type === "match_cancelled" ? "REFUND_FAILED" : "FAILED", // REMOVED to avoid enum error
             last_settlement_error: e.message ?? String(e),
+            settlement_lock_id: null, // Release lock immediately for Janitor retry
         }).eq("id", lockedMatch.id);
     }
 
