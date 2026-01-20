@@ -54,9 +54,9 @@ export async function POST(req: NextRequest) {
         const otherPlayerReady = isPlayer1 ? match.p2_ready : match.p1_ready;
 
         if (otherPlayerReady) {
-            console.log(`[Ready API] Both players ready! Transitioning to DEPOSITING...`);
-            updates.status = 'DEPOSITING';
-            updates.deposit_started_at = new Date().toISOString();
+            console.log(`[Ready API] Both players ready! Waiting for Host to trigger Start Deposit...`);
+            // NOTE: We do NOT transition to 'DEPOSITING' here anymore.
+            // The Host's frontend will trigger /api/match/start-deposit to create the match on-chain first.
         }
 
         // Toggle to TRUE (always set true when clicking Ready)
