@@ -17,9 +17,12 @@ const ESCROW_ADDRESS = process.env.NEXT_PUBLIC_ESCROW_ADDRESS!;
 const DEPOSIT_AMOUNT = "5"; // 5 USDC
 
 // Add 'usdc' to ABI to check the stored address
+// Hardcoded V4 ABI to ensure no import issues
 const DEBUG_ESCROW_ABI = [
-  ...ESCROW_ABI,
-  "function usdc() external view returns (address)"
+    "function deposit(bytes32 matchId) external",
+    "function usdc() external view returns (address)",
+    "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)",
+    "function claimable(address player) external view returns (uint256)"
 ];
 
 // Ready Check Countdown Timer (45 seconds)
@@ -475,6 +478,10 @@ function ArcadeInterface() {
         // Deposit to Contract
         addLog("Depositing 5 USDC...");
         const matchIdBytes32 = numericToBytes32(matchData.contract_match_id);
+        console.log("Deposit Call - Address:", ESCROW_ADDRESS);
+        console.log("Deposit Call - ABI:", DEBUG_ESCROW_ABI);
+        console.log("Deposit Call - MatchID:", matchIdBytes32);
+        
         const tx = await escrow.deposit(matchIdBytes32, { gasLimit: 200000 });
         addLog("Transaction sent, waiting for confirmation...");
         await tx.wait();
