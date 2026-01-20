@@ -14,7 +14,7 @@ const provider = new ethers.JsonRpcProvider(process.env.RPC_URL || "https://sepo
 
 // Escrow contract ABI for deposit verification
 const ESCROW_ABI = [
-    "event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount)"
+    "event Deposited(bytes32 indexed matchId, address indexed player, uint256 amount)"
 ];
 
 async function verifyDepositOnChain(txHash: string, expectedPlayer: string): Promise<{ verified: boolean; error?: string }> {
@@ -42,7 +42,7 @@ async function verifyDepositOnChain(txHash: string, expectedPlayer: string): Pro
                         return null;
                     }
                 })
-                .filter(e => e && e.name === "Deposit");
+                .filter(e => e && e.name === "Deposited");
 
             if (depositEvents.length === 0) {
                 return { verified: false, error: "No Deposit event found" };

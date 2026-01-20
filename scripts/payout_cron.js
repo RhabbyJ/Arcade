@@ -79,10 +79,16 @@ function checkEnv() {
 checkEnv();
 
 const ESCROW_ABI = [
-    "function distributeWinnings(bytes32 matchId, address winner) external",
-    "function refundMatch(bytes32 matchId, address player) external",
-    "function getMatch(bytes32 matchId) external view returns (address player1, address player2, uint256 pot, bool isComplete, bool isActive, address winner)",
-    "event Deposit(bytes32 indexed matchId, address indexed player, uint256 amount)"
+    "function cancelMatch(bytes32 matchId, string reason) external",
+    "function settleMatch(bytes32 matchId, address winner) external",
+    "function withdrawFor(address player) external",
+    "function claimable(address player) external view returns (uint256)",
+    "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)",
+    "event Deposited(bytes32 indexed matchId, address indexed player, uint256 amount)",
+    "event MatchSettled(bytes32 indexed matchId, address winner, uint256 prize, uint256 fee)",
+    "event MatchCancelled(bytes32 indexed matchId, string reason)",
+    "event Withdrawn(address indexed player, uint256 amount)",
+    "event ClaimableIncreased(address indexed player, uint256 amount, bytes32 indexed matchId)"
 ];
 
 function numericToBytes32(num) {

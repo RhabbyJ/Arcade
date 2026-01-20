@@ -475,7 +475,7 @@ function ArcadeInterface() {
         // Deposit to Contract
         addLog("Depositing 5 USDC...");
         const matchIdBytes32 = numericToBytes32(matchData.contract_match_id);
-        const tx = await escrow.deposit(matchIdBytes32, amount, { gasLimit: 200000 });
+        const tx = await escrow.deposit(matchIdBytes32, { gasLimit: 200000 });
         addLog("Transaction sent, waiting for confirmation...");
         await tx.wait();
         addLog("Deposit Confirmed on Blockchain!");

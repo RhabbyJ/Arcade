@@ -10,30 +10,19 @@ export const ESCROW_ABI = [
     "function deposit(bytes32 matchId) external",
     "function cancelMatch(bytes32 matchId, string reason) external",
     "function settleMatch(bytes32 matchId, address winner) external",
-    "function withdraw() external",
-    "function withdrawFor(address player) external",
+    "function withdrawFor(address player) external", // Push payment
 
-    // Admin Functions
-    "function setTreasury(address _treasury) external",
-    "function setBot(address _bot) external",
-    "function setRake(uint256 _bps) external",
-
-    // View Functions
-    "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)",
-    "function getDeposited(bytes32 matchId, address player) external view returns (uint256)",
+    // Admin & View
     "function claimable(address player) external view returns (uint256)",
-    "function treasury() external view returns (address)",
-    "function bot() external view returns (address)",
-    "function rakeBps() external view returns (uint256)",
-    "function MAX_RAKE_BPS() external view returns (uint256)",
+    "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)",
 
     // Events
     "event MatchCreated(bytes32 indexed matchId, address indexed p1, address indexed p2, uint256 stake)",
     "event Deposited(bytes32 indexed matchId, address indexed player, uint256 amount)",
     "event MatchSettled(bytes32 indexed matchId, address winner, uint256 prize, uint256 fee)",
     "event MatchCancelled(bytes32 indexed matchId, string reason)",
-    "event ClaimableIncreased(address indexed player, uint256 amount, bytes32 indexed matchId)",
-    "event Withdrawn(address indexed player, uint256 amount)"
+    "event Withdrawn(address indexed player, uint256 amount)",
+    "event ClaimableIncreased(address indexed player, uint256 amount, bytes32 indexed matchId)"
 ];
 
 // Helper: Convert UUID string to bytes32 for contract calls
