@@ -51,7 +51,7 @@ export async function handlePayout(match: MatchRecord, winnerTeam: "team1" | "te
     const receipt = await tx.wait();
 
     // Finalize DB state & Release Server
-    await supabaseAdmin.from("matches").update({
+    const { error: matchError } = await supabaseAdmin.from("matches").update({
         status: "COMPLETE",
         payout_status: "PAID",
         winner_address: winnerAddress,
@@ -59,10 +59,14 @@ export async function handlePayout(match: MatchRecord, winnerTeam: "team1" | "te
         last_settlement_error: null,
     }).eq("id", match.id);
 
+    if (matchError) throw new Error(`Payout DB Match Update Failed: ${matchError.message}`);
+
     // Release Server
-    await supabaseAdmin.from("game_servers")
+    const { error: serverError } = await supabaseAdmin.from("game_servers")
         .update({ status: "FREE", current_match_id: null })
         .eq("current_match_id", match.id);
+
+    if (serverError) console.error(`Failed to release server for match ${match.id}: ${serverError.message}`);
 
     return receipt.hash as string;
 }
@@ -114,17 +118,21 @@ export async function handleRefund(match: MatchRecord): Promise<{ txHash1: strin
     }
 
     // Finalize DB state & Release Server
-    await supabaseAdmin.from("matches").update({
+    const { error: matchError } = await supabaseAdmin.from("matches").update({
         status: "CANCELLED",
         payout_status: "REFUNDED",
         settled_at: new Date().toISOString(),
         last_settlement_error: null,
     }).eq("id", match.id);
 
+    if (matchError) throw new Error(`Refund DB Match Update Failed: ${matchError.message}`);
+
     // Release Server
-    await supabaseAdmin.from("game_servers")
+    const { error: serverError } = await supabaseAdmin.from("game_servers")
         .update({ status: "FREE", current_match_id: null })
         .eq("current_match_id", match.id);
+
+    if (serverError) console.error(`Failed to release server for match ${match.id}: ${serverError.message}`);
 
     return { txHash1, txHash2 };
 }
