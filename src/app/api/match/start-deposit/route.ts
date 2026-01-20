@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
 
             // Check if match already exists on-chain (idempotency)
             const existingMatch = await escrow.getMatch(matchIdBytes32);
-            if (existingMatch.status !== 0n) { // Status.NONE = 0
+            if (existingMatch.status !== BigInt(0)) { // Status.NONE = 0
                 console.log(`[Start Deposit API] Match already exists on-chain with status: ${existingMatch.status}`);
             } else {
                 // Create match on blockchain
