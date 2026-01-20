@@ -30,28 +30,33 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function main() {
-    console.log("\n--- Game Servers ---");
-    const { data: servers, error: sErr } = await supabase.from('game_servers').select('*');
-    if (sErr) console.error("Error fetching servers:", sErr);
-    else console.log(JSON.stringify(servers, null, 2));
+    console.log("\n--- Checking for Stuck/Queued Matches ---");
+    const { data: stuckMatches, error } = await supabase
+        .from("matches")
+        .select("*")
+        .in("status", ["DATHOST_BOOTING", "WAITING_FOR_PLAYERS", "LIVE", "CANCELLED", "COMPLETE"])
+        .not("payout_status", "in", '("PAID","REFUNDED")')
+        .lt("settlement_attempts", 10);
 
-    const { data: matches, error: mErr } = await supabase.from('matches')
-        .select('*')
-        .eq('id', 'dc9f316c-6f58-40c9-a5e0-44ac141aa959');
+    if (error) {
+        console.error("Error fetching stuck matches:", error);
+        return;
+    }
 
-    if (mErr) console.error("Error fetching matches:", mErr);
-    else {
-        matches.forEach(m => {
-            console.log(`\nMatch ID: ${m.id}`);
+    if (stuckMatches.length === 0) {
+        console.log("✅ No stuck matches found.");
+    } else {
+        console.log(`⚠️ Found ${stuckMatches.length} stuck matches:`);
+        stuckMatches.forEach(m => {
+            console.log(`\n------------------------------------------------`);
+            console.log(`Match ID: ${m.id}`);
             console.log(`Status: ${m.status}`);
-            console.log(`Match Started At: ${m.match_started_at}`);
-            console.log(`Server Connect: ${m.server_connect}`);
-            console.log(`DatHost Snapshot Included: ${!!m.dathost_status_snapshot}`);
-            if (m.dathost_status_snapshot) {
-                const fs = require('fs');
-                fs.writeFileSync('snapshot_debug.json', JSON.stringify(m.dathost_status_snapshot, null, 2));
-                console.log('Snapshot written to snapshot_debug.json');
-            }
+            console.log(`Payout Status: ${m.payout_status}`);
+            console.log(`Settlement Attempts: ${m.settlement_attempts}`);
+            console.log(`Last Error: ${m.last_settlement_error}`);
+            console.log(`Refund TX 1: ${m.refund_tx_hash_1}`);
+            console.log(`Refund TX 2: ${m.refund_tx_hash_2}`);
+            console.log(`Payout TX: ${m.payout_tx_hash}`);
         });
     }
 }

@@ -18,140 +18,129 @@ export interface MatchRecord {
     contract_match_id: string | number;
     player1_address: string;
     player2_address: string;
+    p1_deposit_verified?: boolean;
+    p2_deposit_verified?: boolean;
+    p1_tx_hash?: string;
+    p2_tx_hash?: string;
     [key: string]: any;
 }
 
 /**
  * Handle payout for a completed match.
- * - Stores settlement_kind before sending tx
- * - Stores tx hash immediately after broadcast (crash-safe)
- * - Waits for receipt before finalizing DB
+ * - Idempotent settlement on EscrowV4
+ * - "Best effort" push payment for UX
  */
-export async function handlePayout(match: MatchRecord, winnerTeam: "team1" | "team2"): Promise<string> {
-    const winnerAddress = winnerTeam === "team1" ? match.player1_address : match.player2_address;
-    if (!winnerAddress) throw new Error("Winner address missing");
+export async function handlePayout(match: any, winnerAddress: string) {
+    if (!winnerAddress) throw new Error("handlePayout: No winner address");
 
-    // Mark intent (helps reconciler)
-    await supabaseAdmin.from("matches").update({
-        settlement_kind: "PAYOUT",
-        last_settlement_error: null,
-    }).eq("id", match.id);
-
-    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-
-    // Send transaction
-    const tx = await getEscrow().distributeWinnings(matchIdBytes32, winnerAddress);
-
-    // Crash-safe: store tx hash immediately
-    await supabaseAdmin.from("matches").update({
-        payout_tx_hash: tx.hash,
-    }).eq("id", match.id);
-
-    // Wait for confirmation
-    const receipt = await tx.wait();
-
-    // Finalize DB state & Release Server
+    // 1. Finalize DB state & Release Server
+    // We do this first for instant UI response
     const { error: matchError } = await supabaseAdmin.from("matches").update({
         status: "COMPLETE",
         payout_status: "PAID",
         winner_address: winnerAddress,
         settled_at: new Date().toISOString(),
         last_settlement_error: null,
+        settlement_kind: "PAYOUT"
     }).eq("id", match.id);
 
     if (matchError) throw new Error(`Payout DB Match Update Failed: ${matchError.message}`);
 
     // Release Server
-    const { error: serverError } = await supabaseAdmin.from("game_servers")
+    await supabaseAdmin.from("game_servers")
         .update({ status: "FREE", current_match_id: null })
         .eq("current_match_id", match.id);
 
-    if (serverError) console.error(`Failed to release server for match ${match.id}: ${serverError.message}`);
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    const apiEscrow = getEscrow();
 
-    return receipt.hash as string;
+    try {
+        // 2. Settle on-chain (Writes claimable balance)
+        const tx = await apiEscrow.settleMatch(matchIdBytes32, winnerAddress);
+        console.log(`SettleMatch TX: ${tx.hash}`);
+        await tx.wait();
+
+        // 3. Push payout (Best Effort push to wallet)
+        try {
+            const wTx = await apiEscrow.withdrawFor(winnerAddress);
+            await wTx.wait();
+        } catch (e: any) {
+            console.log(`withdrawFor push failed/skipped: ${e.message}`);
+        }
+
+        return { txHash: tx.hash };
+    } catch (e: any) {
+        console.error(`On-chain settlement failed: ${e.message}`);
+        throw e;
+    }
 }
 
 /**
  * Handle refund for a cancelled match.
- * - Refunds BOTH players (per-player deposits in updated contract)
- * - Stores tx hashes for each refund
+ * - Idempotent cancel on EscrowV4
+ * - Pull-payment model: players can always withdraw manually
  */
-export async function handleRefund(match: MatchRecord): Promise<{ txHash1: string | null; txHash2: string | null }> {
-    // Mark intent
-    await supabaseAdmin.from("matches").update({
-        settlement_kind: "REFUND",
-        last_settlement_error: null,
-    }).eq("id", match.id);
-
-    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-
-    let txHash1: string | null = null;
-    let txHash2: string | null = null;
-
-    // Refund Player 1
-    if (match.player1_address) {
-        try {
-            const tx1 = await getEscrow().refundMatch(matchIdBytes32, match.player1_address);
-            txHash1 = tx1.hash;
-            await supabaseAdmin.from("matches").update({ refund_tx_hash_1: txHash1 }).eq("id", match.id);
-            await tx1.wait();
-        } catch (e: any) {
-            // If "Nothing to refund", that's okay (player didn't deposit)
-            if (!e.message?.includes("Nothing to refund")) {
-                throw e;
-            }
-        }
-    }
-
-    // Refund Player 2
-    if (match.player2_address) {
-        try {
-            const tx2 = await getEscrow().refundMatch(matchIdBytes32, match.player2_address);
-            txHash2 = tx2.hash;
-            await supabaseAdmin.from("matches").update({ refund_tx_hash_2: txHash2 }).eq("id", match.id);
-            await tx2.wait();
-        } catch (e: any) {
-            if (!e.message?.includes("Nothing to refund")) {
-                throw e;
-            }
-        }
-    }
-
-    // Finalize DB state & Release Server
+export async function handleRefund(match: MatchRecord) {
+    // 1. Finalize DB state & Release Server
     const { error: matchError } = await supabaseAdmin.from("matches").update({
         status: "CANCELLED",
         payout_status: "REFUNDED",
         settled_at: new Date().toISOString(),
         last_settlement_error: null,
+        settlement_kind: "REFUND",
     }).eq("id", match.id);
 
     if (matchError) throw new Error(`Refund DB Match Update Failed: ${matchError.message}`);
 
     // Release Server
-    const { error: serverError } = await supabaseAdmin.from("game_servers")
+    await supabaseAdmin.from("game_servers")
         .update({ status: "FREE", current_match_id: null })
         .eq("current_match_id", match.id);
 
-    if (serverError) console.error(`Failed to release server for match ${match.id}: ${serverError.message}`);
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+    const apiEscrow = getEscrow();
 
-    return { txHash1, txHash2 };
+    try {
+        // 2. Cancel on-chain (Idempotent)
+        const tx = await apiEscrow.cancelMatch(matchIdBytes32, "WEBHOOK_CANCEL");
+        await tx.wait();
+
+        // 3. Push refunds (Best Effort)
+        if (match.player1_address && (match.p1_deposit_verified || match.p1_tx_hash)) {
+            try {
+                const w1 = await apiEscrow.withdrawFor(match.player1_address);
+                await w1.wait();
+            } catch (e) { }
+        }
+        if (match.player2_address && (match.p2_deposit_verified || match.p2_tx_hash)) {
+            try {
+                const w2 = await apiEscrow.withdrawFor(match.player2_address);
+                await w2.wait();
+            } catch (e) { }
+        }
+
+        return { txHash: tx.hash };
+    } catch (e: any) {
+        console.error(`On-chain refund failed: ${e.message}`);
+        throw e;
+    }
 }
 
 /**
  * Log match event for audit trail
  */
 export async function logMatchEvent(
-    matchId: string,
+    match_id: string,
     source: "dathost_webhook" | "janitor_poll" | "manual",
-    eventType: string,
+    event_type: string,
     payload: any,
-    eventId?: string
+    event_id?: string
 ) {
     await supabaseAdmin.from("match_events").insert({
-        match_id: matchId,
+        match_id,
         source,
-        event_type: eventType,
-        event_id: eventId,
+        event_type,
+        event_id,
         payload,
     });
 }

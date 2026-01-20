@@ -246,25 +246,30 @@ async function reconcileSettlement(match) {
     }
 
     // Contract state
+    //async function checkMatchSettled(match) {
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
     try {
-        const [, , pot, isComplete, isActive, winner] = await escrow.getMatch(matchIdBytes32);
-        if (isComplete && !isActive && pot === BigInt(0)) {
-            if (winner !== ethers.ZeroAddress) {
+        // [address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner]
+        const matchData = await escrow.getMatch(matchIdBytes32);
+        const status = Number(matchData[5]); // Status enum: 0=NONE, 1=CREATED, 2=CANCELLED, 3=SETTLED
+        const winner = matchData[6];
+
+        if (status === 2 || status === 3) {
+            if (status === 3 && winner !== ethers.ZeroAddress) {
                 await supabase.from("matches").update({
                     status: "COMPLETE",
                     payout_status: "PAID",
                     winner_address: winner,
                     settled_at: new Date().toISOString(),
                 }).eq("id", match.id);
-                return { done: true, reason: "contract_paid" };
+                return { done: true, reason: "contract_settled" };
             } else {
                 await supabase.from("matches").update({
                     status: "CANCELLED",
                     payout_status: "REFUNDED",
                     settled_at: new Date().toISOString(),
                 }).eq("id", match.id);
-                return { done: true, reason: "contract_refunded" };
+                return { done: true, reason: "contract_cancelled" };
             }
         }
     } catch (e) {
@@ -278,32 +283,54 @@ async function reconcileSettlement(match) {
 
 async function handlePayout(match, winnerTeam) {
     const winnerAddress = winnerTeam === "team1" ? match.player1_address : match.player2_address;
-    if (!winnerAddress) throw new Error("Winner address missing");
+    if (!winnerAddress) throw new Error("handlePayout: No winner address");
 
-    await supabase.from("matches").update({ settlement_kind: "PAYOUT" }).eq("id", match.id);
-
-    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-    const tx = await escrow.distributeWinnings(matchIdBytes32, winnerAddress);
-    await supabase.from("matches").update({ payout_tx_hash: tx.hash }).eq("id", match.id);
-    console.log(`   📝 TX: ${tx.hash}`);
-    await tx.wait();
-
+    // 1. INSTANT UI UPDATE
     await supabase.from("matches").update({
         status: "COMPLETE",
-        payout_status: "PAID",
+        payout_status: "PAID", // Optimistic
         winner_address: winnerAddress,
         settled_at: new Date().toISOString(),
+        settlement_kind: "PAYOUT"
     }).eq("id", match.id);
+
+    // Release Server
+    await supabase.from("game_servers")
+        .update({ status: "FREE", current_match_id: null })
+        .eq("current_match_id", match.id);
+
+    console.log(`   ✅ Status updated to COMPLETE & Server Released (Instant)`);
+
+    const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+
+    try {
+        // 2. SETTLE ON-CHAIN (Idempotent)
+        const tx = await escrow.settleMatch(matchIdBytes32, winnerAddress);
+        console.log(`   📝 Settle TX: ${tx.hash}`);
+        await supabase.from("matches").update({ payout_tx_hash: tx.hash }).eq("id", match.id);
+        await tx.wait();
+
+        // 3. PUSH PAYMENT (Best Effort)
+        console.log(`   💸 Pushing payout to winner...`);
+        try {
+            const wTx = await escrow.withdrawFor(winnerAddress);
+            await wTx.wait();
+            console.log(`   ✅ Payout pushed! ${wTx.hash}`);
+        } catch (e) {
+            console.log(`   ℹ️ Auto-payout push skipped or failed (User can still manually withdraw).`);
+        }
+    } catch (e) {
+        console.error(`   ❌ Settle Failed: ${e.message}`);
+    }
 }
 
 async function handleRefund(match) {
     console.log(`   Detailed Refund ID: ${match.contract_match_id}`);
 
     // 1. INSTANT UI UPDATE & SERVER RELEASE
-    // We do this FIRST so the user sees "CANCELLED" immediately, even if blockchain lags.
     await supabase.from("matches").update({
         status: "CANCELLED",
-        payout_status: "REFUNDED", // Optimistic update
+        payout_status: "REFUNDED", // Optimistic
         settlement_kind: "REFUND",
         settled_at: new Date().toISOString(),
         last_settlement_error: null,
@@ -318,53 +345,30 @@ async function handleRefund(match) {
 
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
 
-    // Helper to check if already succeeded on-chain
-    const checkSuccess = async (hash) => {
-        if (!hash) return false;
-        try {
-            const receipt = await provider.getTransactionReceipt(hash);
-            return receipt && receipt.status === 1;
-        } catch (e) {
-            return false;
-        }
-    };
+    try {
+        // 2. CANCEL ON-CHAIN (Idempotent)
+        const tx = await escrow.cancelMatch(matchIdBytes32, "MATCH_CANCELLED_BY_BOT");
+        console.log(`   📝 Cancel TX: ${tx.hash}`);
+        await tx.wait();
 
-    // 2. REFUND PLAYER 1 (Only if verified)
-    if (match.player1_address && match.p1_deposit_verified) {
-        if (await checkSuccess(match.refund_tx_hash_1)) {
-            console.log(`   ✅ P1 already refunded (verified on-chain)`);
-        } else {
+        // 3. PUSH REFUNDS (Best Effort)
+        if (match.player1_address && (match.p1_deposit_verified || match.p1_tx_hash)) {
+            console.log(`   💸 Pushing refund to P1...`);
             try {
-                const tx1 = await escrow.refundMatch(matchIdBytes32, match.player1_address);
-                await supabase.from("matches").update({ refund_tx_hash_1: tx1.hash }).eq("id", match.id);
-                console.log(`   📝 Refund P1 TX: ${tx1.hash}`);
-                await tx1.wait();
-            } catch (e) {
-                console.error(`   ❌ Refund P1 Failed: ${e.message}`);
-                // Don't restart loop unless it's a network error?
-                // For now, logging is enough. Logic continues to P2.
-            }
+                const w1 = await escrow.withdrawFor(match.player1_address);
+                await w1.wait();
+            } catch (e) { console.log(`   ℹ️ P1 auto-refund push skipped.`); }
         }
-    } else {
-        console.log(`   ⏭️ P1 did not deposit, skipping refund.`);
-    }
 
-    // 3. REFUND PLAYER 2 (Only if verified)
-    if (match.player2_address && match.p2_deposit_verified) {
-        if (await checkSuccess(match.refund_tx_hash_2)) {
-            console.log(`   ✅ P2 already refunded (verified on-chain)`);
-        } else {
+        if (match.player2_address && (match.p2_deposit_verified || match.p2_tx_hash)) {
+            console.log(`   💸 Pushing refund to P2...`);
             try {
-                const tx2 = await escrow.refundMatch(matchIdBytes32, match.player2_address);
-                await supabase.from("matches").update({ refund_tx_hash_2: tx2.hash }).eq("id", match.id);
-                console.log(`   📝 Refund P2 TX: ${tx2.hash}`);
-                await tx2.wait();
-            } catch (e) {
-                console.error(`   ❌ Refund P2 Failed: ${e.message}`);
-            }
+                const w2 = await escrow.withdrawFor(match.player2_address);
+                await w2.wait();
+            } catch (e) { console.log(`   ℹ️ P2 auto-refund push skipped.`); }
         }
-    } else {
-        console.log(`   ⏭️ P2 did not deposit, skipping refund.`);
+    } catch (e) {
+        console.error(`   ❌ On-chain Cancel Failed: ${e.message}`);
     }
 
     console.log(`   ✅ Refund Process Complete`);
@@ -385,7 +389,7 @@ async function verifyDeposit(txHash, expectedPlayer, matchIdBytes32) {
             .map(l => {
                 try { return escrow.interface.parseLog(l); } catch { return null; }
             })
-            .filter(e => e && e.name === "Deposit");
+            .filter(e => e && e.name === "Deposited");
 
         if (logs.length === 0) return { verified: false, reason: "no_event" };
 
