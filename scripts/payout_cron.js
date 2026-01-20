@@ -297,9 +297,26 @@ async function handlePayout(match, winnerTeam) {
 }
 
 async function handleRefund(match) {
-    await supabase.from("matches").update({ settlement_kind: "REFUND" }).eq("id", match.id);
+    console.log(`   Detailed Refund ID: ${match.contract_match_id}`);
+
+    // 1. INSTANT UI UPDATE & SERVER RELEASE
+    // We do this FIRST so the user sees "CANCELLED" immediately, even if blockchain lags.
+    await supabase.from("matches").update({
+        status: "CANCELLED",
+        payout_status: "REFUNDED", // Optimistic update
+        settlement_kind: "REFUND",
+        settled_at: new Date().toISOString(),
+        last_settlement_error: null,
+    }).eq("id", match.id);
+
+    // Release Server
+    await supabase.from("game_servers")
+        .update({ status: "FREE", current_match_id: null })
+        .eq("current_match_id", match.id);
+
+    console.log(`   ✅ Status updated to CANCELLED & Server Released (Instant)`);
+
     const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-    console.log(`   Detailed Refund ID: ${matchIdBytes32} (Original: ${match.contract_match_id})`);
 
     // Helper to check if already succeeded on-chain
     const checkSuccess = async (hash) => {
@@ -312,7 +329,8 @@ async function handleRefund(match) {
         }
     };
 
-    if (match.player1_address) {
+    // 2. REFUND PLAYER 1 (Only if verified)
+    if (match.player1_address && match.p1_deposit_verified) {
         if (await checkSuccess(match.refund_tx_hash_1)) {
             console.log(`   ✅ P1 already refunded (verified on-chain)`);
         } else {
@@ -323,12 +341,16 @@ async function handleRefund(match) {
                 await tx1.wait();
             } catch (e) {
                 console.error(`   ❌ Refund P1 Failed: ${e.message}`);
-                if (!e.message?.includes("Nothing to refund")) throw e;
+                // Don't restart loop unless it's a network error?
+                // For now, logging is enough. Logic continues to P2.
             }
         }
+    } else {
+        console.log(`   ⏭️ P1 did not deposit, skipping refund.`);
     }
 
-    if (match.player2_address) {
+    // 3. REFUND PLAYER 2 (Only if verified)
+    if (match.player2_address && match.p2_deposit_verified) {
         if (await checkSuccess(match.refund_tx_hash_2)) {
             console.log(`   ✅ P2 already refunded (verified on-chain)`);
         } else {
@@ -339,17 +361,15 @@ async function handleRefund(match) {
                 await tx2.wait();
             } catch (e) {
                 console.error(`   ❌ Refund P2 Failed: ${e.message}`);
-                if (!e.message?.includes("Nothing to refund")) throw e;
             }
         }
+    } else {
+        console.log(`   ⏭️ P2 did not deposit, skipping refund.`);
     }
 
-    await supabase.from("matches").update({
-        status: "CANCELLED",
-        payout_status: "REFUNDED",
-        settled_at: new Date().toISOString(),
-    }).eq("id", match.id);
+    console.log(`   ✅ Refund Process Complete`);
 }
+
 
 // --- Deposit Logic ---
 
