@@ -70,39 +70,51 @@ export async function POST(req: NextRequest) {
         // ========================================================
         // 3. CREATE MATCH ON ESCROW V4 CONTRACT (NEW FOR V4!)
         // ========================================================
+        console.log("[Start Deposit API] >>> ENTERING BLOCKCHAIN SECTION <<<");
+
         const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS;
         const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
         const RPC_URL = process.env.POLYGON_RPC_URL || process.env.RPC_URL;
 
+        console.log("[Start Deposit API] Env check:", {
+            ESCROW_ADDRESS: ESCROW_ADDRESS ? `${ESCROW_ADDRESS.slice(0, 10)}...` : 'MISSING!',
+            PAYOUT_PRIVATE_KEY: PAYOUT_PRIVATE_KEY ? 'SET (hidden)' : 'MISSING!',
+            RPC_URL: RPC_URL || 'MISSING!'
+        });
+
         if (!ESCROW_ADDRESS || !PAYOUT_PRIVATE_KEY || !RPC_URL) {
-            console.error("[Start Deposit API] Missing env vars:", {
-                ESCROW_ADDRESS: !!ESCROW_ADDRESS,
-                PAYOUT_PRIVATE_KEY: !!PAYOUT_PRIVATE_KEY,
-                RPC_URL: !!RPC_URL
-            });
-            return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+            console.error("[Start Deposit API] ❌ Missing env vars - aborting blockchain call");
+            return NextResponse.json({ error: "Server configuration error - missing blockchain credentials" }, { status: 500 });
         }
 
         try {
+            console.log("[Start Deposit API] Creating provider and wallet...");
             const provider = new JsonRpcProvider(RPC_URL);
             const botWallet = new Wallet(PAYOUT_PRIVATE_KEY, provider);
+            console.log("[Start Deposit API] Bot wallet address:", botWallet.address);
+
             const escrow = new Contract(ESCROW_ADDRESS, ESCROW_V4_ABI, botWallet);
 
             const matchIdBytes32 = numericToBytes32(match.contract_match_id);
             const stake = parseUnits("5", 18); // 5 USDC (18 decimals for testnet fake USDC)
 
-            console.log(`[Start Deposit API] Creating match on-chain...`);
-            console.log(`  matchId: ${matchIdBytes32}`);
-            console.log(`  p1: ${match.player1_address}`);
-            console.log(`  p2: ${match.player2_address}`);
-            console.log(`  stake: ${stake.toString()}`);
+            console.log(`[Start Deposit API] Preparing createMatch call:`, {
+                matchId: matchIdBytes32,
+                p1: match.player1_address,
+                p2: match.player2_address,
+                stake: stake.toString()
+            });
 
             // Check if match already exists on-chain (idempotency)
+            console.log("[Start Deposit API] Checking if match exists on-chain...");
             const existingMatch = await escrow.getMatch(matchIdBytes32);
+            console.log("[Start Deposit API] Existing match status:", existingMatch.status.toString());
+
             if (existingMatch.status !== BigInt(0)) { // Status.NONE = 0
-                console.log(`[Start Deposit API] Match already exists on-chain with status: ${existingMatch.status}`);
+                console.log(`[Start Deposit API] ⚠️ Match already exists on-chain with status: ${existingMatch.status}`);
             } else {
                 // Create match on blockchain
+                console.log("[Start Deposit API] 🚀 Sending createMatch transaction...");
                 const tx = await escrow.createMatch(
                     matchIdBytes32,
                     match.player1_address,
@@ -110,16 +122,25 @@ export async function POST(req: NextRequest) {
                     stake,
                     { gasLimit: 200000 }
                 );
-                console.log(`[Start Deposit API] createMatch tx sent: ${tx.hash}`);
-                await tx.wait();
-                console.log(`[Start Deposit API] createMatch confirmed!`);
+                console.log(`[Start Deposit API] ✅ createMatch tx sent: ${tx.hash}`);
+
+                console.log("[Start Deposit API] Waiting for confirmation...");
+                const receipt = await tx.wait();
+                console.log(`[Start Deposit API] ✅ createMatch CONFIRMED! Block: ${receipt?.blockNumber}`);
             }
         } catch (chainError: any) {
-            console.error("[Start Deposit API] Blockchain error:", chainError);
+            console.error("[Start Deposit API] ❌ BLOCKCHAIN ERROR:", {
+                message: chainError.message,
+                reason: chainError.reason,
+                code: chainError.code,
+                shortMessage: chainError.shortMessage
+            });
             return NextResponse.json({
-                error: "Failed to create match on blockchain: " + (chainError.reason || chainError.message)
+                error: "Failed to create match on blockchain: " + (chainError.reason || chainError.shortMessage || chainError.message)
             }, { status: 500 });
         }
+
+        console.log("[Start Deposit API] >>> BLOCKCHAIN SECTION COMPLETE <<<");
 
         // 4. Transition to DEPOSITING in database
         const now = new Date().toISOString();
