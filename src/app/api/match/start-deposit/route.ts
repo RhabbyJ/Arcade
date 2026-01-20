@@ -1,11 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { getWalletFromSession } from '@/lib/sessionAuth';
+import { ethers, Wallet, Contract, JsonRpcProvider, parseUnits } from 'ethers';
+
+// ESCROW V4 ABI - createMatch function
+const ESCROW_V4_ABI = [
+    "function createMatch(bytes32 matchId, address p1, address p2, uint256 stake) external",
+    "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)"
+];
+
+// Helper function (same as abi.ts)
+function numericToBytes32(num: number | string): string {
+    const hex = BigInt(num).toString(16);
+    return '0x' + hex.padStart(64, '0');
+}
 
 /**
  * POST /api/match/start-deposit
  * 
  * Transitions match from LOBBY to DEPOSITING when both players are ready.
+ * ALSO creates the match on EscrowV4 contract (required for V4).
  * Only callable when both p1_ready and p2_ready are true.
  * 
  * Requires valid session
@@ -53,7 +67,61 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Both players must be ready first" }, { status: 400 });
         }
 
-        // 3. Transition to DEPOSITING
+        // ========================================================
+        // 3. CREATE MATCH ON ESCROW V4 CONTRACT (NEW FOR V4!)
+        // ========================================================
+        const ESCROW_ADDRESS = process.env.ESCROW_ADDRESS;
+        const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
+        const RPC_URL = process.env.POLYGON_RPC_URL || process.env.RPC_URL;
+
+        if (!ESCROW_ADDRESS || !PAYOUT_PRIVATE_KEY || !RPC_URL) {
+            console.error("[Start Deposit API] Missing env vars:", {
+                ESCROW_ADDRESS: !!ESCROW_ADDRESS,
+                PAYOUT_PRIVATE_KEY: !!PAYOUT_PRIVATE_KEY,
+                RPC_URL: !!RPC_URL
+            });
+            return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
+        }
+
+        try {
+            const provider = new JsonRpcProvider(RPC_URL);
+            const botWallet = new Wallet(PAYOUT_PRIVATE_KEY, provider);
+            const escrow = new Contract(ESCROW_ADDRESS, ESCROW_V4_ABI, botWallet);
+
+            const matchIdBytes32 = numericToBytes32(match.contract_match_id);
+            const stake = parseUnits("5", 18); // 5 USDC (18 decimals for testnet fake USDC)
+
+            console.log(`[Start Deposit API] Creating match on-chain...`);
+            console.log(`  matchId: ${matchIdBytes32}`);
+            console.log(`  p1: ${match.player1_address}`);
+            console.log(`  p2: ${match.player2_address}`);
+            console.log(`  stake: ${stake.toString()}`);
+
+            // Check if match already exists on-chain (idempotency)
+            const existingMatch = await escrow.getMatch(matchIdBytes32);
+            if (existingMatch.status !== 0n) { // Status.NONE = 0
+                console.log(`[Start Deposit API] Match already exists on-chain with status: ${existingMatch.status}`);
+            } else {
+                // Create match on blockchain
+                const tx = await escrow.createMatch(
+                    matchIdBytes32,
+                    match.player1_address,
+                    match.player2_address,
+                    stake,
+                    { gasLimit: 200000 }
+                );
+                console.log(`[Start Deposit API] createMatch tx sent: ${tx.hash}`);
+                await tx.wait();
+                console.log(`[Start Deposit API] createMatch confirmed!`);
+            }
+        } catch (chainError: any) {
+            console.error("[Start Deposit API] Blockchain error:", chainError);
+            return NextResponse.json({
+                error: "Failed to create match on blockchain: " + (chainError.reason || chainError.message)
+            }, { status: 500 });
+        }
+
+        // 4. Transition to DEPOSITING in database
         const now = new Date().toISOString();
         const { data, error: updateError } = await supabaseAdmin
             .from('matches')
