@@ -132,46 +132,33 @@ export async function POST(req: Request) {
         }
 
         // 7. Execute settlement (IF we have the keys, otherwise queue for Janitor)
-        if (!process.env.PAYOUT_PRIVATE_KEY) {
-            console.log(`Match ${matchId}: No private key (Vercel). Updating status and queuing for Janitor.`);
+        // --- SECURE INSTANT MODE ---
+        // 1. Webhook handles UI + Server Release (Instant)
+        // 2. Bot handles Payouts (Secure)
 
-            if (event.type === "match_ended") {
-                await supabaseAdmin.from("matches").update({
-                    status: "COMPLETE",
-                    payout_status: "PROCESSING", // Janitor will pick this up
-                    dathost_status_snapshot: event,
-                }).eq("id", lockedMatch.id);
-            } else {
-                await supabaseAdmin.from("matches").update({
-                    status: "CANCELLED",
-                    payout_status: "PROCESSING", // Janitor will pick this up
-                    dathost_status_snapshot: event,
-                }).eq("id", lockedMatch.id);
-            }
-            return NextResponse.json({ received: true, note: "Queued for Janitor" });
-        }
+        // Release Server immediately
+        await supabaseAdmin.from("game_servers")
+            .update({ status: "FREE", current_match_id: null })
+            .eq("current_match_id", lockedMatch.id);
 
-        // We have keys (VPS) -> Execute immediately
-        if (event.type === "match_ended") {
-            const winnerTeam = event.winner as "team1" | "team2";
-            if (!winnerTeam) {
-                throw new Error("match_ended but no winner specified");
-            }
-            await handlePayout(lockedMatch, winnerTeam);
-            console.log(`Match ${matchId}: PAID`);
-        } else {
-            // match_cancelled
-            await handleRefund(lockedMatch);
-            console.log(`Match ${matchId}: REFUNDED`);
-        }
-    } catch (e: any) {
-        console.error(`Settlement error for ${matchId}:`, e.message);
+        // Clear lock so Bot can pick it up for payout
         await supabaseAdmin.from("matches").update({
-            // payout_status: event.type === "match_cancelled" ? "REFUND_FAILED" : "FAILED", // REMOVED to avoid enum error
-            last_settlement_error: e.message ?? String(e),
-            settlement_lock_id: null, // Release lock immediately for Janitor retry
+            settlement_lock_id: null,
+            last_settlement_error: null,
         }).eq("id", lockedMatch.id);
-    }
 
-    return NextResponse.json({ received: true });
+        console.log(`   ✅ Match ${lockedMatch.id} status updated & server released. Queued for Bot payout.`);
+
+        return new Response("Match processed (UI Only)", { status: 200 });
+
+    } catch (e: any) {
+        console.error(`   ❌ Webhook Error: ${e.message}`);
+        if (lockedMatch) {
+            await supabaseAdmin.from("matches").update({
+                last_settlement_error: e.message ?? String(e),
+                settlement_lock_id: null, // Always release lock
+            }).eq("id", lockedMatch.id);
+        }
+        return new Response(`Webhook Error: ${e.message}`, { status: 500 });
+    }
 }
