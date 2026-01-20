@@ -9,7 +9,7 @@ const ESCROW_V4_ABI = [
     "function getMatch(bytes32 matchId) external view returns (address p1, address p2, uint256 stake, bool p1Deposited, bool p2Deposited, uint8 status, address winner)"
 ];
 
-// Helper function (same as abi.ts)
+// Helper function
 function numericToBytes32(num: number | string): string {
     const hex = BigInt(num).toString(16);
     return '0x' + hex.padStart(64, '0');
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
         }
 
         // ========================================================
-        // 3. CREATE MATCH ON ESCROW V4 CONTRACT (NEW FOR V4!)
+        // 3. CREATE MATCH ON ESCROW V4 CONTRACT
         // ========================================================
         console.log("[Start Deposit API] >>> ENTERING BLOCKCHAIN SECTION <<<");
 
@@ -76,67 +76,42 @@ export async function POST(req: NextRequest) {
         const PAYOUT_PRIVATE_KEY = process.env.PAYOUT_PRIVATE_KEY;
         const RPC_URL = process.env.POLYGON_RPC_URL || process.env.RPC_URL;
 
-        console.log("[Start Deposit API] Env check:", {
-            ESCROW_ADDRESS: ESCROW_ADDRESS ? `${ESCROW_ADDRESS.slice(0, 10)}...` : 'MISSING!',
-            PAYOUT_PRIVATE_KEY: PAYOUT_PRIVATE_KEY ? 'SET (hidden)' : 'MISSING!',
-            RPC_URL: RPC_URL || 'MISSING!'
-        });
-
         if (!ESCROW_ADDRESS || !PAYOUT_PRIVATE_KEY || !RPC_URL) {
-            console.error("[Start Deposit API] ❌ Missing env vars - aborting blockchain call");
+            console.error("[Start Deposit API] ❌ Missing env vars (ESCROW_ADDRESS, PAYOUT_PRIVATE_KEY, RPC_URL)");
             return NextResponse.json({ error: "Server configuration error - missing blockchain credentials" }, { status: 500 });
         }
 
         try {
-            console.log("[Start Deposit API] Creating provider and wallet...");
             const provider = new JsonRpcProvider(RPC_URL);
             const botWallet = new Wallet(PAYOUT_PRIVATE_KEY, provider);
-            console.log("[Start Deposit API] Bot wallet address:", botWallet.address);
-
             const escrow = new Contract(ESCROW_ADDRESS, ESCROW_V4_ABI, botWallet);
 
             const matchIdBytes32 = numericToBytes32(match.contract_match_id);
-            const stake = parseUnits("5", 18); // 5 USDC (18 decimals for testnet fake USDC)
+            const stake = parseUnits("5", 18);
 
-            console.log(`[Start Deposit API] Preparing createMatch call:`, {
-                matchId: matchIdBytes32,
-                p1: match.player1_address,
-                p2: match.player2_address,
-                stake: stake.toString()
-            });
+            console.log(`[Start Deposit API] createMatch(${matchIdBytes32}, ${match.player1_address}, ${match.player2_address}, 5 USDC)`);
 
-            // Check if match already exists on-chain (idempotency)
-            console.log("[Start Deposit API] Checking if match exists on-chain...");
+            // Idempotency Check
             const existingMatch = await escrow.getMatch(matchIdBytes32);
-            console.log("[Start Deposit API] Existing match status:", existingMatch.status.toString());
-
-            if (existingMatch.status !== BigInt(0)) { // Status.NONE = 0
-                console.log(`[Start Deposit API] ⚠️ Match already exists on-chain with status: ${existingMatch.status}`);
+            if (existingMatch.status !== BigInt(0)) {
+                console.log(`[Start Deposit API] Match already exists (status ${existingMatch.status}). Skipping create.`);
             } else {
-                // Create match on blockchain
-                console.log("[Start Deposit API] 🚀 Sending createMatch transaction...");
+                console.log("[Start Deposit API] Sending TX...");
                 const tx = await escrow.createMatch(
                     matchIdBytes32,
                     match.player1_address,
                     match.player2_address,
                     stake,
-                    { gasLimit: 200000 }
+                    { gasLimit: 300000 }
                 );
-                console.log(`[Start Deposit API] ✅ createMatch tx sent: ${tx.hash}`);
-
-                console.log("[Start Deposit API] Waiting for confirmation...");
-                const receipt = await tx.wait();
-                console.log(`[Start Deposit API] ✅ createMatch CONFIRMED! Block: ${receipt?.blockNumber}`);
+                console.log(`[Start Deposit API] TX Sent: ${tx.hash}. Waiting...`);
+                await tx.wait();
+                console.log(`[Start Deposit API] TX Confirmed!`);
             }
         } catch (chainError: any) {
-            console.error("[Start Deposit API] ❌ BLOCKCHAIN ERROR:", {
-                message: chainError.message,
-                reason: chainError.reason,
-                code: chainError.code,
-                shortMessage: chainError.shortMessage
-            });
+            console.error("[Start Deposit API] ❌ Blockchain Error:", chainError);
             return NextResponse.json({
-                error: "Failed to create match on blockchain: " + (chainError.reason || chainError.shortMessage || chainError.message)
+                error: "Failed to create on-chain match: " + (chainError.reason || chainError.message)
             }, { status: 500 });
         }
 
